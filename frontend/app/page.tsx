@@ -243,6 +243,14 @@ export default function Home(){
 
   const approvedCount=useMemo(()=>session?STAGES.filter(s=>session.specs[s]?.approval_status==="approved").length:0,[session]);
   const draftDirty=draft!==(current?.content??"");
+  const activeProviderReady=useMemo(()=>{
+    if(!health)return false;
+    const provider=health.active_provider.provider;
+    if(provider==="lm_studio"||provider==="ollama"){
+      return health.detected_local_services?.[provider]?.online===true;
+    }
+    return health.cloud_provider_readiness?.[provider]===true;
+  },[health]);
 
   return <main className="min-h-screen">
     <header className="sticky top-0 z-30 border-b border-slate-800/90 bg-[#0B0F17]/90 backdrop-blur-xl">
@@ -253,8 +261,8 @@ export default function Home(){
         </div>
         <div className="ml-auto flex items-center gap-2">
           <button className="badge bg-slate-950/60" aria-label="LLM provider switcher" onClick={()=>setProviderOpen(true)}>
-            <span className={`dot ${health?"ok":"bad"}`}/><Cpu className="h-3.5 w-3.5"/>
-            {health?`${health.active_provider.provider} · ${health.active_provider.model}`:"backend offline"}
+            <span className={`dot ${activeProviderReady?"ok":"bad"}`}/><Cpu className="h-3.5 w-3.5"/>
+            {health?`${health.active_provider.provider} · ${health.active_provider.model} · ${activeProviderReady?"ready":"offline"}`:"backend offline"}
             <Settings2 className="h-3.5 w-3.5"/>
           </button>
           <span className="badge"><Activity className="h-3.5 w-3.5"/>127.0.0.1:3210</span>
