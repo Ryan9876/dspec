@@ -32,16 +32,36 @@ class ProviderInfo:
 
 class ProviderGateway:
     def __init__(self) -> None:
-        self.timeout = httpx.Timeout(8.0, connect=2.0)
+        # Health and provider discovery are UI-critical loopback operations.
+        # A missing local runtime must never stall the app health endpoint.
+        self.timeout = httpx.Timeout(0.75, connect=0.25)
+        self._discovery_cache: tuple[float, dict[str, ProviderInfo]] | None = None
+        self._discovery_lock = asyncio.Lock()
 
-    async def discover(self) -> dict[str, ProviderInfo]:
-        lm, ollama = await asyncio.gather(self._probe_lm_studio(), self._probe_ollama())
-        return {
-            "lm_studio": lm,
-            "ollama": ollama,
-            "openai": ProviderInfo("openai", bool(load_api_key("openai")), [], bool(load_api_key("openai")), "https://api.openai.com"),
-            "anthropic": ProviderInfo("anthropic", bool(load_api_key("anthropic")), [], bool(load_api_key("anthropic")), "https://api.anthropic.com"),
-        }
+    async def discover(self, max_age_seconds: float = 2.0) -> dict[str, ProviderInfo]:
+        now = time.monotonic()
+        cached = self._discovery_cache
+        if cached and now - cached[0] <= max_age_seconds:
+            return cached[1]
+        async with self._discovery_lock:
+            now = time.monotonic()
+            cached = self._discovery_cache
+            if cached and now - cached[0] <= max_age_seconds:
+                return cached[1]
+            lm, ollama = await asyncio.gather(self._probe_lm_studio(), self._probe_ollama())
+            openai_key = load_api_key("openai")
+            anthropic_key = load_api_key("anthropic")
+            result = {
+                "lm_studio": lm,
+                "ollama": ollama,
+                "openai": ProviderInfo("openai", bool(openai_key), [], bool(openai_key), "https://api.openai.com"),
+                "anthropic": ProviderInfo("anthropic", bool(anthropic_key), [], bool(anthropic_key), "https://api.anthropic.com"),
+            }
+            self._discovery_cache = (time.monotonic(), result)
+            return result
+
+    def invalidate_discovery_cache(self) -> None:
+        self._discovery_cache = None
 
     async def _probe_lm_studio(self) -> ProviderInfo:
         endpoint = os.environ.get("DSPEC_LM_STUDIO_URL", "http://127.0.0.1:1234")
@@ -77,6 +97,7 @@ class ProviderGateway:
         if api_key:
             storage = store_api_key(provider, api_key)
         db.set_setting("active_provider", {"provider": provider, "model": model})
+        self.invalidate_discovery_cache()
         return {"provider": provider, "model": model, "credential_storage": storage or "unchanged"}
 
     async def complete(self, messages: list[dict[str, str]], provider: str | None = None, model: str | None = None) -> tuple[str, dict[str, Any]]:
