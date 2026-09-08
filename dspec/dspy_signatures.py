@@ -30,6 +30,12 @@ try:
         questions: list[DiscoveryQuestion]
         gaps_found: list[str]
 
+    class SemanticReviewResult(BaseModel):
+        score: float = Field(ge=0.0, le=1.0)
+        must_fix: list[str]
+        recommendations: list[str]
+        consistency_issues: list[str]
+
     class IdeaToConstitution(dspy.Signature):
         """Create concrete, commercial-ready project governance. Resolve ambiguity without inventing validation evidence. Define stack boundaries, security/privacy rules, runtime and deployment constraints, compatibility expectations, quality gates, and explicit unknowns."""
         raw_idea_description: str = dspy.InputField(desc="Product intent, saved discovery answers, and additional product-level direction.")
@@ -60,6 +66,13 @@ try:
         tasks_spec: str = dspy.OutputField(desc="Complete ordered Markdown task plan with requirement traceability and verification.")
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of task executability and traceability.")
 
+    class SemanticSpecReview(dspy.Signature):
+        """Review a DSpec tier as a strict independent reviewer. Evaluate completeness, internal consistency, cross-tier alignment, security/failure behavior where applicable, and downstream executability. Do not claim tests or runtime evidence. A score >= 0.90 requires no material must-fix issue."""
+        stage: str = dspy.InputField(desc="Active DSpec tier.")
+        prior_tiers: str = dspy.InputField(desc="Higher-authority prior tiers for consistency checking.")
+        spec_markdown: str = dspy.InputField(desc="Specification draft under review.")
+        review: SemanticReviewResult = dspy.OutputField(desc="Independent semantic review result.")
+
     class DiscoverSpecGaps(dspy.Signature):
         """Analyze current product input for the active DSpec stage. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity. Prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve a free-text option. Do not ask implementation trivia that can safely be inferred."""
         stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
@@ -70,7 +83,7 @@ try:
     DSPY_AVAILABLE = True
 except Exception:
     DSPY_AVAILABLE = False
-    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = None  # type: ignore
+    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = None  # type: ignore
 
 
 def status() -> dict[str, Any]:
