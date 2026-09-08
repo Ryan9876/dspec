@@ -57,6 +57,13 @@ def init_db(path: Path | None = None) -> None:
               UNIQUE(session_id, spec_type, revision_number)
             );
             CREATE INDEX IF NOT EXISTS idx_spec_latest ON spec_documents(session_id, spec_type, revision_number DESC);
+            CREATE TABLE IF NOT EXISTS draft_buffers (
+              session_id TEXT NOT NULL REFERENCES project_sessions(id) ON DELETE CASCADE,
+              spec_type TEXT NOT NULL CHECK(spec_type IN ('constitution','requirements','solution','tasks')),
+              content TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY(session_id, spec_type)
+            );
             CREATE TABLE IF NOT EXISTS interview_answers (
               session_id TEXT NOT NULL REFERENCES project_sessions(id) ON DELETE CASCADE,
               stage TEXT NOT NULL,
@@ -131,7 +138,15 @@ def get_session(session_id: str) -> dict[str, Any]:
                 item["review"] = json.loads(item.pop("review_json"))
                 specs[stage] = item
         answers = [dict(r) for r in conn.execute("SELECT * FROM interview_answers WHERE session_id=? ORDER BY stage,question_id", (session_id,))]
+        drafts = {
+            row["spec_type"]: {"content": row["content"], "updated_at": row["updated_at"]}
+            for row in conn.execute(
+                "SELECT spec_type,content,updated_at FROM draft_buffers WHERE session_id=?",
+                (session_id,),
+            )
+        }
         result["specs"] = specs
+        result["drafts"] = drafts
         result["answers"] = answers
         return result
 
@@ -155,6 +170,21 @@ def save_answer(session_id: str, stage: str, question_id: str, selected: str | N
         conn.execute("UPDATE project_sessions SET updated_at=? WHERE id=?", (now, session_id))
 
 
+def save_draft_buffer(session_id: str, stage: str, content: str) -> dict[str, Any]:
+    if stage not in STAGES:
+        raise ValueError("Invalid stage")
+    now = utcnow()
+    with tx() as conn:
+        conn.execute(
+            """INSERT INTO draft_buffers(session_id,spec_type,content,updated_at)
+            VALUES(?,?,?,?) ON CONFLICT(session_id,spec_type) DO UPDATE SET
+            content=excluded.content, updated_at=excluded.updated_at""",
+            (session_id, stage, content, now),
+        )
+        conn.execute("UPDATE project_sessions SET updated_at=? WHERE id=?", (now, session_id))
+    return {"stage": stage, "content": content, "updated_at": now}
+
+
 def save_spec(session_id: str, stage: str, content: str, quality_score: float = 0.0, review: dict[str, Any] | None = None, approval_status: str = "draft") -> dict[str, Any]:
     if stage not in STAGES:
         raise ValueError("Invalid stage")
@@ -168,6 +198,12 @@ def save_spec(session_id: str, stage: str, content: str, quality_score: float = 
         conn.execute(
             "INSERT INTO spec_documents(id,session_id,spec_type,content,revision_number,version_number,quality_score,review_json,approval_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (sid, session_id, stage, content, revision, 1, quality_score, json.dumps(review or {}), approval_status, now),
+        )
+        conn.execute(
+            """INSERT INTO draft_buffers(session_id,spec_type,content,updated_at)
+            VALUES(?,?,?,?) ON CONFLICT(session_id,spec_type) DO UPDATE SET
+            content=excluded.content, updated_at=excluded.updated_at""",
+            (session_id, stage, content, now),
         )
         conn.execute("UPDATE project_sessions SET updated_at=? WHERE id=?", (now, session_id))
     return get_session(session_id)["specs"][stage]
