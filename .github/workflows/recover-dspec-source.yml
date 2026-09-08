@@ -1,0 +1,36 @@
+name: Recover DSpec source
+on:
+  push:
+    branches:
+      - recovery/ds-chg-001
+    paths:
+      - .github/workflows/recover-dspec-source.yml
+permissions:
+  contents: write
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: recovery/ds-chg-001
+      - name: Reassemble validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .recovery/part-* > /tmp/dspec-source.b64
+          echo "9490d630972b54d618f219a71ec71fbb95fc5c26ca0359b3bfe52325649680b4  /tmp/dspec-source.b64" | sha256sum -c -
+          base64 -d /tmp/dspec-source.b64 > /tmp/dspec-source.tar.gz
+          echo "3b6d8fd1fab7ddd1acfde3671877456bc5adacaae536a4d242103611d50bf907  /tmp/dspec-source.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/dspec-source.tar.gz
+          rm -rf .recovery .github/workflows/recover-dspec-source.yml
+          python -m compileall -q dspec
+      - name: Commit recovered implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "DSpec Recovery"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Recover DS-CHG-001 prototype source baseline"
+          git push origin HEAD:recovery/ds-chg-001
