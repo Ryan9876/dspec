@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import uuid
@@ -242,4 +243,33 @@ def cache_put(path: str, sha256: str, summary: dict[str, Any]) -> None:
         conn.execute(
             "INSERT INTO file_ast_cache(file_path,file_hash,ast_summary_json,last_scanned_at) VALUES(?,?,?,?) ON CONFLICT(file_path) DO UPDATE SET file_hash=excluded.file_hash,ast_summary_json=excluded.ast_summary_json,last_scanned_at=excluded.last_scanned_at",
             (path, sha256, json.dumps(summary), utcnow()),
+        )
+
+
+def cache_snapshot(root_path: str) -> dict[str, tuple[str, dict[str, Any]]]:
+    prefix = str(Path(root_path).resolve()) + os.sep
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT file_path,file_hash,ast_summary_json FROM file_ast_cache WHERE file_path LIKE ?",
+            (prefix + "%",),
+        ).fetchall()
+    return {
+        row["file_path"]: (row["file_hash"], json.loads(row["ast_summary_json"]))
+        for row in rows
+    }
+
+
+def cache_put_many(entries: list[tuple[str, str, dict[str, Any]]]) -> None:
+    if not entries:
+        return
+    now = utcnow()
+    rows = [(path, sha256, json.dumps(summary), now) for path, sha256, summary in entries]
+    with tx() as conn:
+        conn.executemany(
+            """INSERT INTO file_ast_cache(file_path,file_hash,ast_summary_json,last_scanned_at)
+            VALUES(?,?,?,?) ON CONFLICT(file_path) DO UPDATE SET
+            file_hash=excluded.file_hash,
+            ast_summary_json=excluded.ast_summary_json,
+            last_scanned_at=excluded.last_scanned_at""",
+            rows,
         )
