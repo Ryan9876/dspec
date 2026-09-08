@@ -44,6 +44,9 @@ def main() -> None:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    page = None
+    browser = None
+    failure: BaseException | None = None
     try:
         wait_health()
         with sync_playwright() as p:
@@ -56,6 +59,12 @@ def main() -> None:
 
             page.goto("http://127.0.0.1:3210", wait_until="domcontentloaded")
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible(timeout=10_000)
+            health_probe = page.evaluate("""async () => {
+                const response = await fetch('/api/health');
+                return {status: response.status, text: await response.text()};
+            }""")
+            print("BROWSER_HEALTH_PROBE", json.dumps(health_probe), flush=True)
+            assert health_probe["status"] == 200, health_probe
             expect(page.get_by_text("Constitution", exact=True)).to_be_visible()
             expect(page.get_by_text("Requirements", exact=True)).to_be_visible()
             expect(page.get_by_text("Solution", exact=True)).to_be_visible()
@@ -63,7 +72,15 @@ def main() -> None:
 
             page.once("dialog", lambda dialog: dialog.accept("browser-e2e"))
             page.get_by_role("button", name="New project").click()
-            expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible()
+            try:
+                expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible(timeout=10_000)
+            except AssertionError:
+                sessions_probe = page.evaluate("""async () => {
+                    const response = await fetch('/api/sessions');
+                    return {status: response.status, text: await response.text()};
+                }""")
+                print("BROWSER_SESSIONS_PROBE", json.dumps(sessions_probe), flush=True)
+                raise
 
             page.get_by_role("button", name="Requirements").click()
             expect(page.get_by_text("Requirements draft", exact=True)).to_be_visible()
@@ -91,13 +108,36 @@ def main() -> None:
             if console_errors:
                 raise AssertionError(f"Browser console errors: {console_errors}")
             browser.close()
+            browser = None
+    except BaseException as exc:
+        failure = exc
+        SCREENSHOT.parent.mkdir(parents=True, exist_ok=True)
+        if page is not None:
+            try:
+                page.screenshot(path=str(SCREENSHOT), full_page=True)
+            except Exception as screenshot_error:
+                print("SCREENSHOT_FAILURE", repr(screenshot_error), flush=True)
+        raise
     finally:
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
         process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=2)
+        if process.stdout is not None:
+            backend_log = process.stdout.read()
+            if backend_log:
+                print("BACKEND_LOG_BEGIN", flush=True)
+                print(backend_log[-12000:], flush=True)
+                print("BACKEND_LOG_END", flush=True)
+        if failure is not None:
+            print("BROWSER_FAILURE", repr(failure), flush=True)
 
 
 if __name__ == "__main__":
