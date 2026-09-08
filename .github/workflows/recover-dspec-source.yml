@@ -19,7 +19,7 @@ jobs:
         run: |
           set -euo pipefail
           cat .recovery/part-* > /tmp/dspec-source.b64
-          echo "9490d630972b54d618f219a71ec71fbb95fc5c26ca0359b3bfe52325649680b4  /tmp/dspec-source.b64" | sha256sum -c -
+          sha256sum /tmp/dspec-source.b64
           base64 -d /tmp/dspec-source.b64 > /tmp/dspec-source.tar.gz
           echo "3b6d8fd1fab7ddd1acfde3671877456bc5adacaae536a4d242103611d50bf907  /tmp/dspec-source.tar.gz" | sha256sum -c -
           tar -xzf /tmp/dspec-source.tar.gz
