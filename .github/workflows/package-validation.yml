@@ -1,0 +1,85 @@
+name: DSpec Mac Candidate Package
+
+on:
+  push:
+    branches:
+      - validation/package-8cb9899c
+    paths:
+      - .github/workflows/package-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact validated main baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 8cb9899c79d537fc271f58fecdf71aeb46e1dae9
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build frontend static export
+        working-directory: frontend
+        run: |
+          npm install
+          npm run typecheck
+          npm run build
+      - name: Build candidate package
+        run: python scripts/build-package.py
+      - name: Verify package identity and integrity
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, zipfile
+          from pathlib import Path
+
+          expected = "8cb9899c79d537fc271f58fecdf71aeb46e1dae9"
+          dist = Path("dist")
+          manifest = json.loads((dist / "candidate-manifest.json").read_text())
+          package = dist / manifest["package_filename"]
+
+          assert manifest["build_hash"] == expected, manifest
+          assert manifest["validation_state"] == "candidate", manifest
+          digest = hashlib.sha256(package.read_bytes()).hexdigest()
+          assert digest == manifest["sha256"], (digest, manifest["sha256"])
+
+          required = {
+              "README.md",
+              "pyproject.toml",
+              "requirements.txt",
+              "frontend/out/index.html",
+              "scripts/install-macos.sh",
+              "scripts/start.sh",
+              "scripts/stop.sh",
+              "scripts/status.sh",
+              "dspec/app.py",
+              "dspec/runner.py",
+          }
+          with zipfile.ZipFile(package) as zf:
+              names = set(zf.namelist())
+          missing = required - names
+          assert not missing, f"Missing package files: {sorted(missing)}"
+
+          print(json.dumps({
+              "build_hash": manifest["build_hash"],
+              "package_filename": manifest["package_filename"],
+              "sha256": digest,
+              "validation_state": manifest["validation_state"],
+              "required_files_verified": len(required),
+          }, indent=2))
+          PY
+      - name: Upload candidate package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspec-mac-candidate-8cb9899c
+          path: |
+            dist/dspec-build-v0.1.0.zip
+            dist/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 14
