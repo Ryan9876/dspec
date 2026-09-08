@@ -121,6 +121,8 @@ def _verify_and_apply_release() -> str:
         if not manifest_path.exists():
             continue
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if data.get("validation_state") != "validated":
+            return "manifest_not_validated"
         package = manifest_path.parent / data["package_filename"]
         if not package.exists():
             return "manifest_found_package_missing"
