@@ -90,6 +90,7 @@ def test_dataset_requires_quality_gated_reviewed_exemplar(tmp_path: Path):
 
 
 def _candidate(tmp_path: Path, *, optimized: float = 0.95, baseline: float = 0.91) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     program = tmp_path / "constitution-program.json"
     program.write_text('{"compiled": true}\n', encoding="utf-8")
     manifest = {
