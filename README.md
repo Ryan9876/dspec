@@ -84,7 +84,43 @@ Generation is executed through DSPy under the currently selected provider. Chang
 
 The runtime generation path uses structured DSPy signatures and `dspy.Refine`.
 
-It is intentionally **UNOPTIMIZED**. No reviewed production training set, MIPROv2 compiled artifact, or authorized optimization evaluation has been supplied. FR-2.3 therefore remains `BLOCKED`; the project does not fabricate optimization evidence.
+The repository now contains a guarded MIPROv2 workflow, but **no optimized production state is claimed or bundled**. FR-2.3 remains `BLOCKED` until reviewed production-spec examples exist and model execution is explicitly authorized.
+
+Install the optional optimizer dependency only on a machine where optimization will actually run:
+
+```bash
+pip install -e ".[optimize]"
+```
+
+A reviewed JSONL dataset can be validated without any model calls:
+
+```bash
+dspec-optimize validate --dataset reviewed-specs.jsonl --stage solution
+```
+
+MIPROv2 execution requires an explicit authorization flag and produces a non-active candidate:
+
+```bash
+dspec-optimize compile \
+  --dataset reviewed-specs.jsonl \
+  --stage solution \
+  --provider lm_studio \
+  --model YOUR_MODEL \
+  --output-dir ./optimization-candidate \
+  --authorize-model-execution
+```
+
+Promotion is a separate checksum-verified operation:
+
+```bash
+dspec-optimize promote \
+  --candidate-manifest ./optimization-candidate/solution-candidate.json \
+  --authorize-promotion
+```
+
+Promoted state is stored locally under `~/.dspec/optimization` (or `DSPEC_OPTIMIZATION_DIR`) and loaded into the matching DSPy stage at runtime. Promotion is rejected when the held-out validation score is below the declared threshold, when the candidate regresses below its baseline/minimum-improvement requirement, or when the compiled state checksum does not match.
+
+See `docs/optimization-dataset.md` for the reviewed dataset contract and evidence boundaries.
 
 ## Build a candidate package
 
