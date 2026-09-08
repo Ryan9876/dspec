@@ -10,6 +10,7 @@ from .dspy_signatures import (
     DSPY_AVAILABLE,
     IdeaToConstitution,
     ScopeToRequirements,
+    SemanticSpecReview,
     SpecToTasks,
 )
 from .provider import ProviderGateway
@@ -155,6 +156,49 @@ class SpecEngine:
             "measurement_scope": "request latency measured locally; provider token accounting not asserted",
         }
         return content, metrics, review
+
+
+    async def semantic_review(self, session: dict[str, Any], stage: str, content: str) -> dict[str, Any]:
+        structural = evaluate(stage, content)
+        if SemanticSpecReview is None:
+            return {
+                "structural": structural,
+                "semantic": None,
+                "score": structural["score"],
+                "passed": False,
+                "semantic_status": "NOT TESTED",
+                "semantic_error": "DSPy semantic review signature is unavailable.",
+            }
+        import dspy
+
+        selected = self.gateway.selected()
+        lm = self._lm(selected)
+        program = dspy.Predict(SemanticSpecReview)
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(
+                stage=stage,
+                prior_tiers=self._prior(session, stage),
+                spec_markdown=content,
+            )
+        semantic = getattr(result, "review", None)
+        if hasattr(semantic, "model_dump"):
+            semantic_data = semantic.model_dump()
+        elif isinstance(semantic, dict):
+            semantic_data = semantic
+        else:
+            raise RuntimeError("DSPy returned an invalid semantic review result.")
+        semantic_score = float(semantic_data.get("score", 0.0))
+        must_fix = semantic_data.get("must_fix") or []
+        combined = round(min(float(structural["score"]), semantic_score), 3)
+        return {
+            "structural": structural,
+            "semantic": semantic_data,
+            "score": combined,
+            "threshold": 0.90,
+            "passed": bool(structural["passed"] and semantic_score >= 0.90 and not must_fix),
+            "semantic_status": "PASS" if semantic_score >= 0.90 and not must_fix else "FAIL",
+            "provider": {"provider": selected["provider"], "model": selected["model"]},
+        }
 
     async def discover(self, session: dict[str, Any], stage: str) -> dict[str, Any]:
         if DiscoverSpecGaps is None:
