@@ -67,6 +67,7 @@ def main() -> None:
             }""")
             print("BROWSER_HEALTH_PROBE", json.dumps(health_probe), flush=True)
             assert health_probe["status"] == 200, health_probe
+            expect(page.get_by_role("button", name="LLM provider switcher")).to_contain_text("offline", timeout=10_000)
             expect(page.get_by_text("Constitution", exact=True)).to_be_visible()
             expect(page.get_by_text("Requirements", exact=True)).to_be_visible()
             expect(page.get_by_text("Solution", exact=True)).to_be_visible()
