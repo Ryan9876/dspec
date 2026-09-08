@@ -335,7 +335,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     return StreamingResponse(
         _events_since(req.session_id, start_seq),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-DSpec-Start-Seq": str(start_seq)},
     )
 
 
