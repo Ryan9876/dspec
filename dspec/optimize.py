@@ -180,14 +180,19 @@ def _marker_coverage(markers: list[str] | tuple[str, ...], content: str) -> floa
     return sum(1 for marker in markers if marker.lower() in lower) / len(markers)
 
 
-def _metric_for(stage: str):
+def _example_key(example: Any, stage: str) -> tuple[str, ...]:
+    return tuple(str(getattr(example, key)) for key in STAGE_INPUTS[stage])
+
+
+def _metric_for(stage: str, marker_map: dict[tuple[str, ...], tuple[str, ...]] | None = None):
     output_field = OUTPUT_FIELDS[stage]
+    marker_map = marker_map or {}
 
     def metric(example: Any, prediction: Any, trace: Any = None) -> float:
         del trace
         content = str(getattr(prediction, output_field, "") or "")
         structural = float(evaluate(stage, content)["score"])
-        markers = getattr(example, "required_markers", []) or []
+        markers = marker_map.get(_example_key(example, stage), ())
         coverage = _marker_coverage(markers, content)
         # Structural completeness is the dominant measure. Reviewer-authored
         # markers preserve domain-critical content without requiring exact text.
@@ -207,17 +212,20 @@ def _to_dspy_examples(bundle: DatasetBundle):
     def convert(item: ReviewedExample):
         fields: dict[str, Any] = dict(item.inputs)
         fields[output_field] = item.expected_spec
-        fields["required_markers"] = list(item.required_markers)
-        fields["source_id"] = item.source_id
         return dspy.Example(**fields).with_inputs(*input_fields)
 
     return [convert(x) for x in bundle.train], [convert(x) for x in bundle.validation]
 
 
-def _average_score(program: Any, examples: list[Any], *, stage: str, lm: Any) -> float:
+def _average_score(
+    program: Any,
+    examples: list[Any],
+    *,
+    stage: str,
+    lm: Any,
+    metric: Any,
+) -> float:
     import dspy
-
-    metric = _metric_for(stage)
     input_fields = STAGE_INPUTS[stage]
     scores: list[float] = []
     with dspy.context(lm=lm):
@@ -250,9 +258,13 @@ def compile_candidate(args: argparse.Namespace) -> dict[str, Any]:
     trainset, valset = _to_dspy_examples(bundle)
     lm = make_lm(args.provider, args.model)
     base = dspy.ChainOfThought(SIGNATURES[args.stage])
-    baseline_score = _average_score(base, valset, stage=args.stage, lm=lm)
+    marker_map = {
+        tuple(item.inputs[key] for key in STAGE_INPUTS[args.stage]): item.required_markers
+        for item in (*bundle.train, *bundle.validation)
+    }
+    metric = _metric_for(args.stage, marker_map)
+    baseline_score = _average_score(base, valset, stage=args.stage, lm=lm, metric=metric)
 
-    metric = _metric_for(args.stage)
     optimizer = MIPROv2(
         metric=metric,
         auto=args.auto,
@@ -270,7 +282,7 @@ def compile_candidate(args: argparse.Namespace) -> dict[str, Any]:
             max_labeled_demos=args.max_labeled_demos,
         )
 
-    optimized_score = _average_score(compiled, valset, stage=args.stage, lm=lm)
+    optimized_score = _average_score(compiled, valset, stage=args.stage, lm=lm, metric=metric)
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     program_path = output_dir / f"{args.stage}-program.json"
