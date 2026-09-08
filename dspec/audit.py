@@ -55,6 +55,8 @@ def scan_repository(repo_path: str, ignore_patterns: list[str] | None = None, us
     bytes_read = 0
     summaries: list[dict[str, Any]] = []
     files: list[str] = []
+    cache = db.cache_snapshot(str(root)) if use_hash_cache else {}
+    cache_updates: list[tuple[str, str, dict[str, Any]]] = []
 
     for current, dirs, names in os.walk(root, followlinks=False):
         current_path = Path(current)
@@ -79,19 +81,23 @@ def scan_repository(repo_path: str, ignore_patterns: list[str] | None = None, us
                 continue
             digest = hashlib.sha256(raw).hexdigest()
             rel = str(path.relative_to(root))
-            cached_item = db.cache_get(str(path), digest) if use_hash_cache else None
-            if cached_item:
-                summary = cached_item
+            cached_entry = cache.get(str(path)) if use_hash_cache else None
+            if cached_entry and cached_entry[0] == digest:
+                summary = cached_entry[1]
                 cached += 1
             else:
                 text = raw.decode("utf-8", errors="replace")
                 summary = _summary(path, text)
-                db.cache_put(str(path), digest, summary)
+                if use_hash_cache:
+                    cache_updates.append((str(path), digest, summary))
             summary = {"path": rel, **summary}
             summaries.append(summary)
             files.append(rel)
             scanned += 1
             bytes_read += len(raw)
+
+    if use_hash_cache:
+        db.cache_put_many(cache_updates)
 
     def ratio(key: str) -> float:
         if not summaries:
