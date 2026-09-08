@@ -20,10 +20,12 @@ from .dspy_signatures import status as dspy_status
 from .exporter import build_bundle
 from .provider import ProviderGateway, public_discovery
 from .quality import evaluate
+from .spec_engine import SpecEngine
 
 app = FastAPI(title="DSpec AI", version=APP_VERSION, docs_url="/api/docs", redoc_url=None)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 gateway = ProviderGateway()
+engine = SpecEngine(gateway)
 
 _BUFFERS: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=2000))
 _SEQ: dict[str, int] = defaultdict(int)
@@ -70,6 +72,11 @@ class GenerateRequest(BaseModel):
     instructions: str | None = None
 
 
+class AssistRequest(BaseModel):
+    session_id: str
+    stage: Literal["constitution", "requirements", "solution", "tasks"]
+
+
 class AuditRequest(BaseModel):
     repo_path: str
     ignore_patterns: list[str] = []
@@ -102,46 +109,11 @@ def _sse(item: dict[str, Any]) -> str:
     return f"id: {item['seq']}\nevent: {item['event']}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-def _generation_context(session: dict[str, Any], stage: str, instructions: str | None) -> list[dict[str, str]]:
-    answers = [a for a in session.get("answers", []) if a["stage"] == stage]
-    prior = []
-    for name in db.STAGES:
-        if name == stage:
-            break
-        if name in session.get("specs", {}):
-            prior.append(f"## {name.title()}\n{session['specs'][name]['content']}")
-    stage_contracts = {
-        "constitution": "Produce project governance, tech-stack boundaries, security/privacy rules, runtime constraints, and measurable quality gates.",
-        "requirements": "Produce user journeys, functional requirements with stable IDs, entities/data semantics, failure/edge behavior, and observable acceptance criteria.",
-        "solution": "Produce concrete architecture, components, typed schemas, API contracts including errors/status codes, state transitions, dependencies, migration/rollback concerns, and security boundaries.",
-        "tasks": "Produce ordered executable work packages mapped to requirement IDs. Every material task must include an exact verification command or objective test assertion.",
-    }
-    answer_text = "\n".join(
-        f"- {a['question_id']}: selected={a.get('selected_option_id') or 'none'}; text={a.get('free_text_payload') or ''}"
-        for a in answers
-    ) or "- No saved interview answers for this stage."
-    system = (
-        "You are the DSpec specification compiler. Produce complete Markdown only. "
-        "Do not use TODO, FIXME, TBD, placeholder pseudocode, or invent validation evidence. "
-        "Unknown consequential facts must be labeled UNKNOWN, BLOCKED, or NOT TESTED. "
-        "Preserve prior-tier authority and make the result executable by downstream coding agents."
-    )
-    user = (
-        f"# Stage\n{stage}\n\n# Contract\n{stage_contracts[stage]}\n\n"
-        f"# Saved answers\n{answer_text}\n\n"
-        f"# Prior tiers\n{chr(10).join(prior) if prior else 'None'}\n\n"
-        f"# Additional instruction\n{instructions or 'None'}"
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-
 async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str, Any]]:
     session = _session_or_404(req.session_id)
-    messages = _generation_context(session, req.stage, req.instructions)
-    text, metrics = await gateway.complete(messages)
-    review = evaluate(req.stage, text)
-    spec = db.save_spec(req.session_id, req.stage, text, review["score"], review, "draft")
-    return text, metrics, spec
+    content, metrics, review = await engine.generate(session, req.stage, req.instructions)
+    spec = db.save_spec(req.session_id, req.stage, content, review["score"], review, "draft")
+    return content, metrics, spec
 
 
 @app.on_event("startup")
@@ -187,6 +159,22 @@ async def provider_select(req: ProviderSelect) -> dict[str, Any]:
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"success": True, "active_provider": selected["provider"], "active_model": selected["model"], "credential_storage": selected["credential_storage"]}
+
+
+@app.post("/api/assist/questions")
+async def assist_questions(req: AssistRequest) -> dict[str, Any]:
+    session = _session_or_404(req.session_id)
+    try:
+        return await engine.discover(session, req.stage)
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            {
+                "error": "assistant_unavailable",
+                "message": str(exc),
+                "state_preserved": True,
+            },
+        ) from exc
 
 
 @app.get("/api/sessions")
