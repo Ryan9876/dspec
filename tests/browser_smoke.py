@@ -49,8 +49,13 @@ def main() -> None:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1512, "height": 982})
-            page.goto("http://127.0.0.1:3210", wait_until="networkidle")
-            expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible()
+            page_errors: list[str] = []
+            console_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+            page.goto("http://127.0.0.1:3210", wait_until="domcontentloaded")
+            expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible(timeout=10_000)
             expect(page.get_by_text("Constitution", exact=True)).to_be_visible()
             expect(page.get_by_text("Requirements", exact=True)).to_be_visible()
             expect(page.get_by_text("Solution", exact=True)).to_be_visible()
@@ -74,12 +79,17 @@ def main() -> None:
             expect(page.get_by_text("Evidence & gaps", exact=True)).to_be_visible(timeout=15_000)
             expect(page.get_by_text("Upgrade specification", exact=True)).to_be_visible()
 
-            page.reload(wait_until="networkidle")
-            expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible()
+            page.reload(wait_until="domcontentloaded")
+            expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible(timeout=10_000)
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible()
 
             SCREENSHOT.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(SCREENSHOT), full_page=True)
+
+            if page_errors:
+                raise AssertionError(f"Browser page errors: {page_errors}")
+            if console_errors:
+                raise AssertionError(f"Browser console errors: {console_errors}")
             browser.close()
     finally:
         process.terminate()
