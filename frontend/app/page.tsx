@@ -16,6 +16,7 @@ type Session = {
     id: string; content: string; revision_number: number; version_number: number;
     quality_score: number; approval_status: string; review: Review;
   }>>;
+  drafts?: Partial<Record<Stage,{content:string;updated_at:string}>>;
   answers: Array<{stage: Stage; question_id: string; selected_option_id?: string; free_text_payload?: string; updated_at?: string}>;
 };
 type Review = {
@@ -89,7 +90,7 @@ export default function Home(){
 
   const loadSession=useCallback(async(id:string)=>{
     const s=await api<Session>(`/api/sessions/${id}`);
-    setSession(s); setDraft(s.specs[stage]?.content??""); setReview(s.specs[stage]?.review??{});
+    setSession(s); setDraft(s.drafts?.[stage]?.content??s.specs[stage]?.content??""); setReview(s.specs[stage]?.review??{});
   },[setSession,stage]);
 
   const refreshSessions=useCallback(async()=>{
@@ -99,7 +100,22 @@ export default function Home(){
   },[loadSession,session]);
 
   useEffect(()=>{ void refreshHealth(); void refreshSessions(); },[]); // intentional bootstrap
-  useEffect(()=>{ if(session){ setDraft(session.specs[stage]?.content??""); setReview(session.specs[stage]?.review??{}); } },[stage,session?.id]);
+  useEffect(()=>{ if(session){ setDraft(session.drafts?.[stage]?.content??session.specs[stage]?.content??""); setReview(session.specs[stage]?.review??{}); } },[stage,session?.id]);
+
+  useEffect(()=>{
+    if(!session||!draft.trim())return;
+    const persist=()=>{
+      const body=JSON.stringify({session_id:session.id,stage,content:draft});
+      const blob=new Blob([body],{type:"application/json"});
+      if(!navigator.sendBeacon("/api/spec/draft",blob)){
+        void fetch("/api/spec/draft",{method:"POST",headers:{"Content-Type":"application/json"},body,keepalive:true});
+      }
+    };
+    const onVisibility=()=>{if(document.visibilityState==="hidden")persist();};
+    window.addEventListener("pagehide",persist);
+    document.addEventListener("visibilitychange",onVisibility);
+    return ()=>{window.removeEventListener("pagehide",persist);document.removeEventListener("visibilitychange",onVisibility);};
+  },[session?.id,stage,draft]);
 
   const current=session?.specs[stage];
 
@@ -121,10 +137,15 @@ export default function Home(){
     }catch(e){setError(String(e));}
   }
 
+  async function saveDraftBuffer(content:string){
+    if(!session)return;
+    await api("/api/spec/draft",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content})});
+  }
+
   function draftChanged(value:string|undefined){
-    const next=value??""; setDraft(next);
+    const next=value??""; setDraft(next); setReview({});
     if(saveTimer.current)clearTimeout(saveTimer.current);
-    saveTimer.current=setTimeout(()=>{void saveDraft(next)},850);
+    saveTimer.current=setTimeout(()=>{void saveDraftBuffer(next).catch(e=>setError(String(e)))},250);
   }
 
   async function saveAssistant(questionId:string, choice:string, text:string){
@@ -186,7 +207,11 @@ export default function Home(){
 
   async function reviewNow(){
     if(!session)return; setBusy("Reviewing");
-    try{const r=await api<Review>("/api/spec/review",{method:"POST",body:JSON.stringify({session_id:session.id,stage})});setReview(r);await loadSession(session.id);}
+    try{
+      if(draft.trim())await saveDraft(draft);
+      const r=await api<Review>("/api/spec/review",{method:"POST",body:JSON.stringify({session_id:session.id,stage})});
+      setReview(r);await loadSession(session.id);
+    }
     catch(e){setError(String(e));}finally{setBusy(null);}
   }
 
@@ -210,6 +235,7 @@ export default function Home(){
   }
 
   const approvedCount=useMemo(()=>session?STAGES.filter(s=>session.specs[s]?.approval_status==="approved").length:0,[session]);
+  const draftDirty=draft!==(current?.content??"");
 
   return <main className="min-h-screen">
     <header className="sticky top-0 z-30 border-b border-slate-800/90 bg-[#0B0F17]/90 backdrop-blur-xl">
@@ -282,7 +308,7 @@ export default function Home(){
 
             <div className="space-y-4">
               <AssistantCard stage={stage} session={session} onSave={saveAssistant}/>
-              <ReviewBoard review={review} status={current?.approval_status} busy={busy} onReview={reviewNow} onApprove={approve}/>
+              <ReviewBoard review={review} status={current?.approval_status} dirty={draftDirty} busy={busy} onReview={reviewNow} onApprove={approve}/>
               <section className="panel p-4">
                 <div className="mb-3 flex items-center gap-2 font-semibold"><Archive className="h-4 w-4 text-cyan-300"/>Handoff</div>
                 <p className="mb-3 text-xs leading-5 text-slate-500">Approved export includes all four tiers plus Claude, Cursor, Codex and ChatGPT agent instructions. Draft exports are explicitly labeled.</p>
@@ -365,15 +391,16 @@ function DynamicQuestion({question,saved,onSave}:{question:DiscoveryQuestion;sav
   </div>
 }
 
-function ReviewBoard({review,status,busy,onReview,onApprove}:{review:Review;status?:string;busy:string|null;onReview:()=>Promise<void>;onApprove:()=>Promise<void>}){
+function ReviewBoard({review,status,dirty,busy,onReview,onApprove}:{review:Review;status?:string;dirty:boolean;busy:string|null;onReview:()=>Promise<void>;onApprove:()=>Promise<void>}){
   const score=review.score??0; const fixes=review.must_fix??[];
   return <section className="panel p-4">
     <div className="mb-3 flex items-center justify-between"><div className="font-semibold">Review board</div><span className={`text-sm font-bold ${scoreTone(score)}`}>{Math.round(score*100)}%</span></div>
     {review.semantic_status&&<div className={`mb-3 rounded-lg px-2 py-1.5 text-xs ${review.semantic_status==="PASS"?"bg-emerald-500/10 text-emerald-300":review.semantic_status==="NOT TESTED"?"bg-amber-500/10 text-amber-200":"bg-rose-500/10 text-rose-200"}`}>Semantic review: {review.semantic_status}{review.semantic_error?` — ${review.semantic_error}`:""}</div>}
     <div className="mb-3 h-1.5 overflow-hidden rounded bg-slate-800"><div className={`h-full ${score>=.9?"bg-emerald-400":score>=.7?"bg-amber-400":"bg-rose-400"}`} style={{width:`${Math.round(score*100)}%`}}/></div>
-    {status==="approved"&&<div className="mb-3 flex items-center gap-2 rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-300"><Check className="h-4 w-4"/>Approved revision</div>}
+    {status==="approved"&&!dirty&&<div className="mb-3 flex items-center gap-2 rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-300"><Check className="h-4 w-4"/>Approved revision</div>}
+    {dirty&&<div className="mb-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">Draft buffer has changes newer than the formal revision. Review will save a new revision first.</div>}
     {!!fixes.length?<div className="space-y-2">{fixes.slice(0,4).map(x=><div key={x.id} className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-2"><div className="text-xs font-semibold text-rose-200">{x.label}</div><div className="mt-1 text-[11px] leading-4 text-slate-500">{x.recommendation??x.detail}</div></div>)}</div>:<div className="mb-3 text-xs text-slate-500">{review.score!==undefined?"No deterministic must-fix items. Approval still represents explicit user/reviewer promotion.":"Run review after creating a draft."}</div>}
-    <div className="mt-3 grid grid-cols-2 gap-2"><button className="btn" disabled={!!busy} onClick={()=>void onReview()}>Review</button><button className="btn btn-primary" disabled={!!busy||score<.9||review.passed!==true} onClick={()=>void onApprove()}>Approve</button></div>
+    <div className="mt-3 grid grid-cols-2 gap-2"><button className="btn" disabled={!!busy} onClick={()=>void onReview()}>Review</button><button className="btn btn-primary" disabled={!!busy||dirty||score<.9||review.passed!==true} onClick={()=>void onApprove()}>Approve</button></div>
   </section>
 }
 
