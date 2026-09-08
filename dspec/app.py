@@ -225,6 +225,9 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
             "score": structural["score"],
             "threshold": 0.90,
             "passed": False,
+            "passing": structural.get("passing", []),
+            "must_fix": structural.get("must_fix", []),
+            "recommendations": structural.get("recommendations", []),
             "semantic_status": "NOT TESTED",
             "semantic_error": str(exc)[:240],
         }
