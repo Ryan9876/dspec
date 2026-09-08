@@ -17,6 +17,43 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type StreamHandlers = {
+  onToken?: (text: string, seq: number) => void;
+  onReview?: (review: unknown) => void;
+  onHeartbeat?: () => void;
+};
+
+async function consumeSse(response: Response, handlers: StreamHandlers): Promise<void> {
+  if (!response.body) throw new Error('Streaming response body is unavailable.');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      if (frame.startsWith(':')) {
+        handlers.onHeartbeat?.();
+      } else {
+        const lines = frame.split('\n');
+        const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message';
+        const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+        if (data) {
+          const payload = JSON.parse(data);
+          if (event === 'token') handlers.onToken?.(String(payload.text ?? ''), Number(payload.seq ?? 0));
+          if (event === 'review_feedback') handlers.onReview?.(payload);
+          if (event === 'error') throw new Error(payload.detail?.message ?? payload.detail ?? 'Generation failed.');
+        }
+      }
+      boundary = buffer.indexOf('\n\n');
+    }
+  }
+}
+
 export const api = {
   health: () => request<Record<string, unknown>>('/api/health'),
   providers: () => request<ProviderDiscovery>('/api/providers'),
@@ -28,7 +65,18 @@ export const api = {
   saveSpec: (id: string, stage: SpecStage, content: string) =>
     request<Session>(`/api/sessions/${id}/specs/${stage}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }),
   approveSpec: (id: string, stage: SpecStage) => request<Session>(`/api/sessions/${id}/specs/${stage}/approve`, { method: 'POST' }),
-  generate: (id: string, stage: SpecStage) => request<Session>('/api/spec/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: id, stage }) }),
+  revise: (id: string, stage: SpecStage, recommendation: string) =>
+    request<Session>('/api/spec/revise', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: id, stage, recommendation }) }),
+  streamGenerate: async (id: string, stage: SpecStage, handlers: StreamHandlers) => {
+    const response = await fetch('/api/spec/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: id, stage })
+    });
+    if (!response.ok) throw new Error(await parseError(response));
+    await consumeSse(response, handlers);
+    return request<Session>(`/api/sessions/${id}`);
+  },
   selectProvider: (provider: string, model: string, apiKey?: string) =>
     request<{ success: boolean; active_provider: string; active_model: string }>('/api/provider/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, model, api_key: apiKey || null }) }),
   audit: (repoPath: string) => request<AuditResult>('/api/audit/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repo_path: repoPath, use_hash_cache: true }) })
