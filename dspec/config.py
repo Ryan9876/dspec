@@ -1,12 +1,31 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 3210
 APP_VERSION = "0.1.0"
-BUILD_HASH = os.environ.get("DSPEC_BUILD_HASH", "dev-uncommitted")
+
+
+def resolve_build_hash(root: Path | None = None) -> str:
+    override = os.environ.get("DSPEC_BUILD_HASH")
+    if override:
+        return override
+    package_root = root or Path(__file__).resolve().parents[1]
+    info_path = package_root / "build-info.json"
+    try:
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+        build_hash = str(data.get("build_hash", "")).strip()
+        if build_hash:
+            return build_hash
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return "dev-uncommitted"
+
+
+BUILD_HASH = resolve_build_hash()
 
 
 def dspec_home() -> Path:
