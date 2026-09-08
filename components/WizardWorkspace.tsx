@@ -46,6 +46,7 @@ export function WizardWorkspace() {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [message, setMessage] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [applying, setApplying] = useState(false);
   const answerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -62,14 +63,19 @@ export function WizardWorkspace() {
     if (answerTimer.current) clearTimeout(answerTimer.current);
     setSaveState('saving');
     answerTimer.current = setTimeout(async () => {
-      try { setSession(await api.saveAnswers(session.id, stage, next)); setSaveState('saved'); }
-      catch { setSaveState('error'); }
+      try {
+        setSession(await api.saveAnswers(session.id, stage, next));
+        setSaveState('saved');
+      } catch {
+        setSaveState('error');
+      }
     }, 450);
   }, [session, stage, setSession]);
 
   function updateAnswer(key: string, value: string) {
     const next = { ...answers, [key]: value };
-    setAnswers(next); saveAnswers(next);
+    setAnswers(next);
+    saveAnswers(next);
   }
 
   function updateDraft(next: string) {
@@ -78,71 +84,183 @@ export function WizardWorkspace() {
     if (draftTimer.current) clearTimeout(draftTimer.current);
     setSaveState('saving');
     draftTimer.current = setTimeout(async () => {
-      try { setSession(await api.saveSpec(session.id, stage, next)); setSaveState('saved'); }
-      catch { setSaveState('error'); }
+      try {
+        setSession(await api.saveSpec(session.id, stage, next));
+        setSaveState('saved');
+      } catch {
+        setSaveState('error');
+      }
     }, 650);
   }
 
   async function generate() {
     if (!session) return;
-    setGenerating(true); setMessage('Generating with the selected provider…');
-    try { const next = await api.generate(session.id, stage); setSession(next); setDraft(next.specs[stage].content); setMessage('Generated and reviewed. Inspect before approval.'); }
-    catch (error) { setMessage(error instanceof Error ? error.message : 'Generation unavailable.'); }
-    finally { setGenerating(false); }
+    const previousDraft = draft;
+    let streamed = '';
+    setGenerating(true);
+    setDraft('');
+    setMessage('Generating with the selected provider…');
+    try {
+      const next = await api.streamGenerate(session.id, stage, {
+        onToken: (text) => {
+          streamed += text;
+          setDraft(streamed);
+        },
+        onHeartbeat: () => setMessage('Model is still working; your inputs remain saved locally.')
+      });
+      setSession(next);
+      setDraft(next.specs[stage].content);
+      setMessage('Generated and reviewed. Inspect before approval.');
+    } catch (error) {
+      setDraft(previousDraft);
+      setMessage(error instanceof Error
+        ? `${error.message} Your prior draft and inputs were preserved. Use the provider selector in the header to fail over.`
+        : 'Generation unavailable. Your prior work was preserved.');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function applyRecommendation(recommendation: string) {
+    if (!session) return;
+    setApplying(true);
+    setMessage('Applying this review item without changing unrelated scope…');
+    try {
+      const next = await api.revise(session.id, stage, recommendation);
+      setSession(next);
+      setDraft(next.specs[stage].content);
+      setMessage('Revision applied. Review the resulting draft before approval.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Revision could not be applied.');
+    } finally {
+      setApplying(false);
+    }
   }
 
   async function approve() {
     if (!session) return;
     setMessage('');
-    try { setSession(await api.approveSpec(session.id, stage)); setMessage(`${stage} approved for this project state.`); }
-    catch (error) { setMessage(error instanceof Error ? error.message : 'Approval blocked.'); }
+    try {
+      setSession(await api.approveSpec(session.id, stage));
+      setMessage(`${stage} approved for this project state.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Approval blocked.');
+    }
   }
 
   async function copy() {
-    await navigator.clipboard.writeText(draft); setMessage('Copied this stage to the clipboard.');
+    await navigator.clipboard.writeText(draft);
+    setMessage('Copied this stage to the clipboard.');
   }
 
   async function download(draftBundle: boolean) {
     if (!session) return;
     const response = await fetch(`/api/export/${session.id}?draft=${draftBundle ? 'true' : 'false'}`);
-    if (!response.ok) { setMessage(await response.text()); return; }
-    const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${session.bundle_name}-${draftBundle ? 'draft-' : ''}bundle.zip`; anchor.click(); URL.revokeObjectURL(url);
-    setMessage(draftBundle ? 'Draft bundle downloaded and explicitly labeled draft.' : 'Approved agent bundle downloaded.');
+    if (!response.ok) {
+      setMessage(await response.text());
+      return;
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${session.bundle_name}-${draftBundle ? 'draft-' : ''}bundle.zip`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setMessage(draftBundle
+      ? 'Draft bundle downloaded and explicitly labeled draft.'
+      : 'Approved agent bundle downloaded.');
   }
 
   if (!session) return null;
   const spec = session.specs[stage];
   const stagePosition = stages.findIndex((s) => s.id === stage);
+
   return <div className="wizard-shell">
     <aside className="stepper">
       <div className="stepper-label">SPEC PIPELINE</div>
       {stages.map((item, index) => {
         const approved = session.specs[item.id].approved;
         const active = item.id === stage;
-        return <button key={item.id} className={`step ${active ? 'active' : ''} ${approved ? 'complete' : ''}`} onClick={() => setStage(item.id)}>
-          <span className="step-index">{approved ? '✓' : item.index}</span><span><strong>{item.label}</strong><small>{item.subtitle}</small></span>{index < stages.length - 1 && <i />}
+        return <button
+          key={item.id}
+          className={`step ${active ? 'active' : ''} ${approved ? 'complete' : ''}`}
+          onClick={() => setStage(item.id)}
+        >
+          <span className="step-index">{approved ? '✓' : item.index}</span>
+          <span><strong>{item.label}</strong><small>{item.subtitle}</small></span>
+          {index < stages.length - 1 && <i />}
         </button>;
       })}
-      <div className="stepper-foot"><span>Progress</span><strong>{Math.round(((stagePosition + (spec.approved ? 1 : 0.45)) / 4) * 100)}%</strong><div className="mini-progress"><i style={{ width: `${((stagePosition + (spec.approved ? 1 : 0.45)) / 4) * 100}%` }} /></div></div>
+      <div className="stepper-foot">
+        <span>Progress</span>
+        <strong>{Math.round(((stagePosition + (spec.approved ? 1 : 0.45)) / 4) * 100)}%</strong>
+        <div className="mini-progress">
+          <i style={{ width: `${((stagePosition + (spec.approved ? 1 : 0.45)) / 4) * 100}%` }} />
+        </div>
+      </div>
     </aside>
 
     <main className="workspace">
-      <div className="workspace-title"><div><span className="eyebrow">TIER {stagePosition + 1} OF 4</span><h1>{stages[stagePosition].label}</h1><p>{stages[stagePosition].subtitle}. Capture product intent first; technical assumptions remain reviewable.</p></div><div className="save-indicator"><span className={`runtime-light ${saveState === 'saved' ? 'online' : ''}`}></span>{saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : saveState === 'saved' ? 'Saved locally' : 'Local persistence'}</div></div>
+      <div className="workspace-title">
+        <div>
+          <span className="eyebrow">TIER {stagePosition + 1} OF 4</span>
+          <h1>{stages[stagePosition].label}</h1>
+          <p>{stages[stagePosition].subtitle}. Capture product intent first; technical assumptions remain reviewable.</p>
+        </div>
+        <div className="save-indicator">
+          <span className={`runtime-light ${saveState === 'saved' ? 'online' : ''}`}></span>
+          {saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Save failed' : saveState === 'saved' ? 'Saved locally' : 'Local persistence'}
+        </div>
+      </div>
 
       <section className="assistant-card">
-        <div className="assistant-head"><div className="assistant-symbol">✦</div><div><span className="eyebrow">GUIDED DISCOVERY</span><h2>Answer what you know. DSpec should expose the gaps.</h2></div></div>
+        <div className="assistant-head">
+          <div className="assistant-symbol">✦</div>
+          <div><span className="eyebrow">GUIDED DISCOVERY</span><h2>Answer what you know. DSpec should expose the gaps.</h2></div>
+        </div>
         <div className="question-list">
-          {questions[stage].map((question) => <div className="question" key={question.key}><label>{question.label}</label>
-            {question.options ? <div className="option-grid">{question.options.map((option) => <button key={option} className={answers[question.key] === option ? 'selected' : ''} onClick={() => updateAnswer(question.key, option)}><span className="radio"></span>{option}</button>)}</div> : <textarea rows={3} value={String(answers[question.key] ?? '')} onChange={(e) => updateAnswer(question.key, e.target.value)} placeholder={question.placeholder} />}
+          {questions[stage].map((question) => <div className="question" key={question.key}>
+            <label>{question.label}</label>
+            {question.options
+              ? <div className="option-grid">{question.options.map((option) => <button
+                  key={option}
+                  className={answers[question.key] === option ? 'selected' : ''}
+                  onClick={() => updateAnswer(question.key, option)}
+                ><span className="radio"></span>{option}</button>)}</div>
+              : <textarea
+                  rows={3}
+                  value={String(answers[question.key] ?? '')}
+                  onChange={(e) => updateAnswer(question.key, e.target.value)}
+                  placeholder={question.placeholder}
+                />}
           </div>)}
         </div>
-        <div className="assistant-actions"><span className="muted small">Provider use is explicit. A failed model call never discards these answers.</span><button className="primary glow" onClick={generate} disabled={generating}>{generating ? 'Generating…' : 'Generate stage draft'}</button></div>
+        <div className="assistant-actions">
+          <span className="muted small">Provider use is explicit. A failed model call never discards these answers.</span>
+          <button className="primary glow" onClick={generate} disabled={generating || applying}>
+            {generating ? 'Generating…' : 'Generate stage draft'}
+          </button>
+        </div>
       </section>
 
       <section className="draft-area">
-        <div className="draft-toolbar"><div><span className="eyebrow">DRAFT REVIEW</span><h2>{stage}.md</h2></div><div className="toolbar-actions"><button className="secondary" onClick={copy} disabled={!draft}>Copy</button><button className="secondary" onClick={() => download(true)}>Draft bundle</button><button className="primary" onClick={approve} disabled={!draft || spec.approved}>Approve stage</button></div></div>
-        <div className="draft-grid"><div className="editor-wrap"><LocalMonaco value={draft} onChange={updateDraft} /></div><ReviewBoard review={spec.review} approved={spec.approved} /></div>
-        <div className="stage-footer"><p className="muted small">{message}</p><button className="secondary" onClick={() => download(false)}>Export approved agent bundle</button></div>
+        <div className="draft-toolbar">
+          <div><span className="eyebrow">DRAFT REVIEW</span><h2>{stage}.md</h2></div>
+          <div className="toolbar-actions">
+            <button className="secondary" onClick={copy} disabled={!draft}>Copy</button>
+            <button className="secondary" onClick={() => download(true)}>Draft bundle</button>
+            <button className="primary" onClick={approve} disabled={!draft || spec.approved || generating || applying}>Approve stage</button>
+          </div>
+        </div>
+        <div className="draft-grid">
+          <div className="editor-wrap"><LocalMonaco value={draft} onChange={updateDraft} /></div>
+          <ReviewBoard review={spec.review} approved={spec.approved} applying={applying} onApply={applyRecommendation} />
+        </div>
+        <div className="stage-footer">
+          <p className="muted small">{message}</p>
+          <button className="secondary" onClick={() => download(false)}>Export approved agent bundle</button>
+        </div>
       </section>
     </main>
   </div>;
