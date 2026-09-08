@@ -35,8 +35,10 @@ def main() -> None:
     DIST.mkdir(exist_ok=True)
     STAGE.mkdir()
 
-    for name in ["dspec", "scripts"]:
-        shutil.copytree(ROOT / name, STAGE / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    for name in ["dspec", "scripts", "docs"]:
+        source = ROOT / name
+        if source.exists():
+            shutil.copytree(source, STAGE / name, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copytree(frontend, STAGE / "frontend" / "out")
     for name in ["pyproject.toml", "requirements.txt", "README.md"]:
         shutil.copy2(ROOT / name, STAGE / name)
