@@ -130,11 +130,15 @@ export default function Home(){
   }
 
   async function saveDraft(content=draft){
-    if(!session||!content.trim())return;
+    if(!session||!content.trim())return false;
     try{
       const saved=await api<{content:string;review:Review}>("/api/spec/save",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content})});
       setReview(saved.review??{}); await loadSession(session.id);
-    }catch(e){setError(String(e));}
+      return true;
+    }catch(e){
+      setError(String(e));
+      return false;
+    }
   }
 
   async function saveDraftBuffer(content:string){
@@ -208,7 +212,10 @@ export default function Home(){
   async function reviewNow(){
     if(!session)return; setBusy("Reviewing");
     try{
-      if(draft.trim())await saveDraft(draft);
+      if(draft.trim()){
+        const saved=await saveDraft(draft);
+        if(!saved)throw new Error("Formal revision could not be saved; semantic review was not started.");
+      }
       const r=await api<Review>("/api/spec/review",{method:"POST",body:JSON.stringify({session_id:session.id,stage})});
       setReview(r);await loadSession(session.id);
     }
