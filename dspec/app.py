@@ -29,6 +29,7 @@ engine = SpecEngine(gateway)
 
 _BUFFERS: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=2000))
 _SEQ: dict[str, int] = defaultdict(int)
+_ACTIVE_TASKS: dict[str, asyncio.Task[None]] = {}
 
 
 class SessionCreate(BaseModel):
@@ -107,6 +108,35 @@ def _record_event(session_id: str, event: str, payload: dict[str, Any]) -> dict[
 def _sse(item: dict[str, Any]) -> str:
     data = {"seq": item["seq"], **item["data"]}
     return f"id: {item['seq']}\nevent: {item['event']}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+async def _events_since(session_id: str, last_seq: int) -> AsyncIterator[str]:
+    current = last_seq
+    last_heartbeat = asyncio.get_running_loop().time()
+    while True:
+        emitted = False
+        for item in list(_BUFFERS[session_id]):
+            if item["seq"] <= current:
+                continue
+            current = item["seq"]
+            emitted = True
+            yield _sse(item)
+            if item["event"] in {"complete", "error"}:
+                return
+        task = _ACTIVE_TASKS.get(session_id)
+        if task and task.done():
+            # The worker always records complete/error before returning. Give the
+            # ring buffer one scheduling turn to expose that terminal event.
+            await asyncio.sleep(0)
+            terminal = [i for i in _BUFFERS[session_id] if i["seq"] > current and i["event"] in {"complete", "error"}]
+            if not terminal:
+                return
+            continue
+        now = asyncio.get_running_loop().time()
+        if now - last_heartbeat >= 15.0:
+            last_heartbeat = now
+            yield ": ping\n\n"
+        await asyncio.sleep(0.10 if emitted else 0.25)
 
 
 async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str, Any]]:
@@ -275,49 +305,48 @@ async def generate(req: GenerateRequest) -> dict[str, Any]:
 @app.post("/api/spec/stream")
 async def stream(req: GenerateRequest) -> StreamingResponse:
     _session_or_404(req.session_id)
-    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    existing = _ACTIVE_TASKS.get(req.session_id)
+    if existing and not existing.done():
+        raise HTTPException(409, {"error": "generation_already_running", "state_preserved": True})
+    start_seq = _SEQ[req.session_id]
 
     async def worker() -> None:
         try:
             text, metrics, spec = await _generate(req)
             chunk_size = 140
             for offset in range(0, len(text), chunk_size):
-                await queue.put(_record_event(req.session_id, "token", {"text": text[offset:offset + chunk_size]}))
-            await queue.put(_record_event(req.session_id, "metrics", metrics))
+                _record_event(req.session_id, "token", {"text": text[offset:offset + chunk_size]})
+                await asyncio.sleep(0)
+            _record_event(req.session_id, "metrics", metrics)
             review = spec.get("review", {})
             for check in review.get("checks", []):
-                await queue.put(_record_event(req.session_id, "assertion_check", {"assertion": check["id"], "passed": check["passed"]}))
-            await queue.put(_record_event(req.session_id, "review_feedback", {"mustfix": review.get("must_fix", []), "recommendations": review.get("recommendations", [])}))
-            await queue.put(_record_event(req.session_id, "complete", {"specType": req.stage, "revision": spec["revision_number"], "version": spec["version_number"]}))
+                _record_event(req.session_id, "assertion_check", {"assertion": check["id"], "passed": check["passed"]})
+            _record_event(req.session_id, "review_feedback", {"mustfix": review.get("must_fix", []), "recommendations": review.get("recommendations", [])})
+            _record_event(req.session_id, "complete", {"specType": req.stage, "revision": spec["revision_number"], "version": spec["version_number"]})
         except Exception as exc:
-            await queue.put(_record_event(req.session_id, "error", {"error": "generation_failed", "message": str(exc), "state_preserved": True, "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"]}))
-        finally:
-            await queue.put(None)
+            _record_event(req.session_id, "error", {
+                "error": "generation_failed",
+                "message": str(exc),
+                "state_preserved": True,
+                "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"],
+            })
 
-    async def events() -> AsyncIterator[str]:
-        task = asyncio.create_task(worker())
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                if item is None:
-                    break
-                yield _sse(item)
-        finally:
-            if not task.done():
-                task.cancel()
-
-    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    _ACTIVE_TASKS[req.session_id] = asyncio.create_task(worker())
+    return StreamingResponse(
+        _events_since(req.session_id, start_seq),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/spec/stream/resume")
-def stream_resume(session_id: str, last_seq: int = 0) -> Response:
+async def stream_resume(session_id: str, last_seq: int = 0) -> StreamingResponse:
     _session_or_404(session_id)
-    body = "".join(_sse(item) for item in _BUFFERS[session_id] if item["seq"] > last_seq)
-    return Response(body, media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+    return StreamingResponse(
+        _events_since(session_id, last_seq),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/audit/scan")
