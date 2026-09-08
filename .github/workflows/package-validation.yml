@@ -1,0 +1,133 @@
+name: DSpec Mac Candidate Package
+
+on:
+  push:
+    branches:
+      - validation/package-04c81945
+    paths:
+      - .github/workflows/package-validation.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact validated main baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 04c81945a0fc68201cfc8545e731a132ce058d1e
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Python runtime
+        run: python -m pip install -e ".[dev]"
+      - name: Build frontend static export
+        working-directory: frontend
+        run: |
+          npm install
+          npm run typecheck
+          npm run build
+      - name: Build candidate package
+        run: python scripts/build-package.py
+      - name: Verify package identity and contents
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, zipfile
+          from pathlib import Path
+
+          expected = "04c81945a0fc68201cfc8545e731a132ce058d1e"
+          dist = Path("dist")
+          manifest = json.loads((dist / "candidate-manifest.json").read_text())
+          package = dist / manifest["package_filename"]
+
+          assert manifest["build_hash"] == expected, manifest
+          assert manifest["validation_state"] == "candidate", manifest
+          digest = hashlib.sha256(package.read_bytes()).hexdigest()
+          assert digest == manifest["sha256"], (digest, manifest["sha256"])
+
+          required = {
+              "README.md",
+              "pyproject.toml",
+              "requirements.txt",
+              "build-info.json",
+              "frontend/out/index.html",
+              "scripts/install-macos.sh",
+              "scripts/start.sh",
+              "scripts/stop.sh",
+              "scripts/status.sh",
+              "dspec/app.py",
+              "dspec/runner.py",
+          }
+          with zipfile.ZipFile(package) as zf:
+              names = set(zf.namelist())
+              build_info = json.loads(zf.read("build-info.json"))
+          missing = required - names
+          assert not missing, f"Missing package files: {sorted(missing)}"
+          assert build_info["build_hash"] == expected, build_info
+
+          print(json.dumps({
+              "build_hash": expected,
+              "package_filename": manifest["package_filename"],
+              "sha256": digest,
+              "validation_state": manifest["validation_state"],
+              "required_files_verified": len(required),
+          }, indent=2))
+          PY
+      - name: Verify extracted runtime build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dspec-candidate-runtime
+          mkdir -p /tmp/dspec-candidate-runtime /tmp/dspec-candidate-home
+          python - <<'PY'
+          import json, zipfile
+          from pathlib import Path
+          dist=Path("dist")
+          manifest=json.loads((dist/"candidate-manifest.json").read_text())
+          with zipfile.ZipFile(dist/manifest["package_filename"]) as zf:
+              zf.extractall("/tmp/dspec-candidate-runtime")
+          PY
+          (
+            cd /tmp/dspec-candidate-runtime
+            DSPEC_HOME=/tmp/dspec-candidate-home PYTHONPATH=/tmp/dspec-candidate-runtime               python -m uvicorn dspec.app:app --host 127.0.0.1 --port 3210               >/tmp/dspec-candidate-runtime.log 2>&1 &
+            echo $! >/tmp/dspec-candidate.pid
+          )
+          python - <<'PY'
+          import json, time, urllib.request
+          expected="04c81945a0fc68201cfc8545e731a132ce058d1e"
+          deadline=time.time()+20
+          last=None
+          while time.time()<deadline:
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:3210/api/health",timeout=1) as r:
+                      body=json.loads(r.read())
+                  assert body["status"]=="healthy", body
+                  assert body["build_hash"]==expected, body
+                  assert body["host"]=="127.0.0.1", body
+                  assert body["port"]==3210, body
+                  assert body["database"]=="connected", body
+                  print(json.dumps(body,indent=2))
+                  break
+              except Exception as exc:
+                  last=exc
+                  time.sleep(.25)
+          else:
+              raise SystemExit(f"Runtime health identity check failed: {last}")
+          PY
+          kill "$(cat /tmp/dspec-candidate.pid)"
+          wait "$(cat /tmp/dspec-candidate.pid)" 2>/dev/null || true
+      - name: Upload candidate package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspec-mac-candidate-04c81945
+          path: |
+            dist/dspec-build-v0.1.0.zip
+            dist/candidate-manifest.json
+          if-no-files-found: error
+          retention-days: 14
