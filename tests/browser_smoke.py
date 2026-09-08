@@ -52,6 +52,8 @@ def main() -> None:
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1512, "height": 982})
+            page.set_default_timeout(15_000)
+            page.set_default_navigation_timeout(15_000)
             page_errors: list[str] = []
             console_errors: list[str] = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
@@ -60,7 +62,7 @@ def main() -> None:
             page.goto("http://127.0.0.1:3210", wait_until="domcontentloaded")
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible(timeout=10_000)
             health_probe = page.evaluate("""async () => {
-                const response = await fetch('/api/health');
+                const response = await fetch('/api/health', {signal: AbortSignal.timeout(10000)});
                 return {status: response.status, text: await response.text()};
             }""")
             print("BROWSER_HEALTH_PROBE", json.dumps(health_probe), flush=True)
@@ -76,7 +78,7 @@ def main() -> None:
                 expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible(timeout=10_000)
             except AssertionError:
                 sessions_probe = page.evaluate("""async () => {
-                    const response = await fetch('/api/sessions');
+                    const response = await fetch('/api/sessions', {signal: AbortSignal.timeout(10000)});
                     return {status: response.status, text: await response.text()};
                 }""")
                 print("BROWSER_SESSIONS_PROBE", json.dumps(sessions_probe), flush=True)
