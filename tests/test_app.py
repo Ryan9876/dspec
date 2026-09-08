@@ -260,3 +260,31 @@ def test_1000_file_audit_index_target(client: TestClient, tmp_path: Path):
     assert body["scan_duration_ms"] <= 3000
     assert body["limits"]["truncated"] is False
     assert "upgrade_spec_md" in body
+
+
+def test_provider_secret_is_not_echoed_in_validation_or_response(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    secret = "sk-super-secret-value-1234567890"
+
+    def fake_select(provider, model, api_key=None):
+        assert api_key == secret
+        return {"provider": provider, "model": model, "credential_storage": "fixture"}
+
+    monkeypatch.setattr("dspec.app.gateway.select", fake_select)
+    result = client.post("/api/provider/select", json={"provider": "openai", "model": "gpt-5.6", "api_key": secret})
+    assert result.status_code == 200
+    assert secret not in result.text
+    assert "api_key" not in result.text.lower()
+
+
+def test_sanitizer_redacts_common_api_key_shapes():
+    from dspec.security import sanitize
+
+    samples = [
+        "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+        "api_key=sk-abcdefghijklmnopqrstuvwxyz123456",
+        "provider key sk-ant-abcdefghijklmnopqrstuvwxyz123456",
+    ]
+    for sample in samples:
+        cleaned = sanitize(sample)
+        assert "[REDACTED_API_KEY]" in cleaned
+        assert "abcdefghijklmnopqrstuvwxyz123456" not in cleaned
