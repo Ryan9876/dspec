@@ -37,8 +37,15 @@ if dspy is not None:
         solution: str = dspy.InputField()
         answers_json: str = dspy.InputField()
         specification: str = dspy.OutputField()
+
+    class ReviseSpecification(dspy.Signature):
+        """Revise a specification only to address the supplied review recommendation while preserving unaffected content and constraints."""
+        stage: str = dspy.InputField()
+        current_specification: str = dspy.InputField()
+        recommendation: str = dspy.InputField()
+        specification: str = dspy.OutputField()
 else:
-    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = None
+    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = ReviseSpecification = None
 
 SIGNATURES = {
     "constitution": IdeaToConstitution,
@@ -85,6 +92,25 @@ def configure_dspy() -> dict:
     return cfg
 
 
+def _refine(stage: str, generator: Any, inputs: dict[str, str], prediction: Any) -> tuple[str, dict]:
+    content = str(prediction.specification)
+    review = validate_candidate(stage, content)
+    if not review["must_fix"] and review["score"] >= 0.90:
+        return content, review
+
+    def metric(_args: dict, pred: Any) -> float:
+        candidate = str(getattr(pred, "specification", ""))
+        candidate_review = validate_candidate(stage, candidate)
+        if candidate_review["must_fix"]:
+            return min(candidate_review["score"], 0.89)
+        return candidate_review["score"]
+
+    refined = dspy.Refine(generator, N=2, reward_fn=metric, threshold=0.90)
+    prediction = refined(**inputs)
+    content = str(prediction.specification)
+    return content, validate_candidate(stage, content)
+
+
 def generate(stage: str, context: dict[str, str], answers_json: str) -> dict:
     configure_dspy()
     signature = SIGNATURES.get(stage)
@@ -92,42 +118,35 @@ def generate(stage: str, context: dict[str, str], answers_json: str) -> dict:
         raise ValueError("invalid stage")
     generator = dspy.ChainOfThought(signature)
     if stage == "constitution":
-        prediction = generator(raw_idea=context.get("idea", ""), answers_json=answers_json)
+        inputs = {"raw_idea": context.get("idea", ""), "answers_json": answers_json}
     elif stage == "requirements":
-        prediction = generator(constitution=context.get("constitution", ""), answers_json=answers_json)
+        inputs = {"constitution": context.get("constitution", ""), "answers_json": answers_json}
     elif stage == "solution":
-        prediction = generator(
-            constitution=context.get("constitution", ""), requirements=context.get("requirements", ""), answers_json=answers_json
-        )
+        inputs = {
+            "constitution": context.get("constitution", ""),
+            "requirements": context.get("requirements", ""),
+            "answers_json": answers_json,
+        }
     else:
-        prediction = generator(
-            constitution=context.get("constitution", ""),
-            requirements=context.get("requirements", ""),
-            solution=context.get("solution", ""),
-            answers_json=answers_json,
-        )
-    content = str(prediction.specification)
-    review = validate_candidate(stage, content)
-    if review["must_fix"] or review["score"] < 0.90:
-        def metric(_args: dict, pred: Any) -> float:
-            candidate = str(getattr(pred, "specification", ""))
-            return validate_candidate(stage, candidate)["score"]
-        refined = dspy.Refine(generator, N=2, reward_fn=metric, threshold=0.90)
-        if stage == "constitution":
-            prediction = refined(raw_idea=context.get("idea", ""), answers_json=answers_json)
-        elif stage == "requirements":
-            prediction = refined(constitution=context.get("constitution", ""), answers_json=answers_json)
-        elif stage == "solution":
-            prediction = refined(
-                constitution=context.get("constitution", ""), requirements=context.get("requirements", ""), answers_json=answers_json
-            )
-        else:
-            prediction = refined(
-                constitution=context.get("constitution", ""),
-                requirements=context.get("requirements", ""),
-                solution=context.get("solution", ""),
-                answers_json=answers_json,
-            )
-        content = str(prediction.specification)
-        review = validate_candidate(stage, content)
+        inputs = {
+            "constitution": context.get("constitution", ""),
+            "requirements": context.get("requirements", ""),
+            "solution": context.get("solution", ""),
+            "answers_json": answers_json,
+        }
+    content, review = _refine(stage, generator, inputs, generator(**inputs))
+    return {"content": content, "review": review}
+
+
+def revise(stage: str, current_specification: str, recommendation: str) -> dict:
+    configure_dspy()
+    if ReviseSpecification is None:
+        raise RuntimeError("dspy_not_installed")
+    generator = dspy.ChainOfThought(ReviseSpecification)
+    inputs = {
+        "stage": stage,
+        "current_specification": current_specification,
+        "recommendation": recommendation,
+    }
+    content, review = _refine(stage, generator, inputs, generator(**inputs))
     return {"content": content, "review": review}
