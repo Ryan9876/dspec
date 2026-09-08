@@ -101,6 +101,10 @@ class SpecEngine:
         output_field = _OUTPUT_FIELDS[stage]
         base = dspy.ChainOfThought(signature)
         promoted = load_promoted_state(base, stage)
+        # Saved DSPy state can include the LM that was used during compilation.
+        # Runtime provider selection remains authoritative, so always rebind the
+        # loaded program to the currently selected LM before inference.
+        base.set_lm(lm)
 
         def reward(_args: dict[str, Any], pred: dspy.Prediction) -> float:
             content = str(getattr(pred, output_field, "") or "")
