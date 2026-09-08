@@ -227,3 +227,36 @@ def test_review_unavailable_remains_not_tested(client: TestClient, monkeypatch: 
     assert review.json()["passed"] is False
     approval = client.post("/api/spec/approve", json={"session_id": sid, "stage": "requirements"})
     assert approval.status_code == 409
+
+
+def test_draft_buffer_survives_readback_without_revision_noise(client: TestClient):
+    sid = create_session(client, "draft-buffer")
+    first = client.post("/api/spec/draft", json={"session_id": sid, "stage": "solution", "content": "first live edit"})
+    second = client.post("/api/spec/draft", json={"session_id": sid, "stage": "solution", "content": "second live edit"})
+    assert first.status_code == 200 and second.status_code == 200
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["drafts"]["solution"]["content"] == "second live edit"
+    assert "solution" not in session["specs"]
+
+    formal = client.post("/api/spec/save", json={"session_id": sid, "stage": "solution", "content": DRAFTS["solution"]})
+    assert formal.status_code == 200
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["specs"]["solution"]["revision_number"] == 1
+    assert session["drafts"]["solution"]["content"] == DRAFTS["solution"]
+
+
+def test_1000_file_audit_index_target(client: TestClient, tmp_path: Path):
+    repo = tmp_path / "repo-1000"
+    repo.mkdir()
+    for index in range(1000):
+        (repo / f"module_{index:04d}.py").write_text(
+            f"def value_{index}(x: int) -> int:\n    return x + {index}\n",
+            encoding="utf-8",
+        )
+    result = client.post("/api/audit/scan", json={"repo_path": str(repo), "use_hash_cache": False})
+    assert result.status_code == 200
+    body = result.json()
+    assert body["total_files_scanned"] == 1000
+    assert body["scan_duration_ms"] <= 3000
+    assert body["limits"]["truncated"] is False
+    assert "upgrade_spec_md" in body
