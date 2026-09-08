@@ -23,6 +23,8 @@ type Review = {
   passing?: Array<{id:string;label:string;detail:string}>;
   must_fix?: Array<{id:string;label:string;detail:string;recommendation?:string}>;
   recommendations?: string[];
+  semantic_status?: "PASS"|"FAIL"|"NOT TESTED"|string;
+  semantic_error?: string;
 };
 type DiscoveryOption = { id:string; label:string; rationale:string };
 type DiscoveryQuestion = {
@@ -134,21 +136,48 @@ export default function Home(){
   async function generate(){
     if(!session)return;
     setBusy("Generating"); setError(null); setStreamText("");
+    let output=""; let lastSeq=0; let attempt=0; let initial=true; let terminal=false; let providerFailure=false;
+    const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
     try{
-      const response=await fetch("/api/spec/stream",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:session.id,stage})});
-      if(!response.ok||!response.body)throw new Error(await response.text());
-      const reader=response.body.getReader(); const decoder=new TextDecoder(); let buffer=""; let output="";
-      while(true){
-        const {done,value}=await reader.read(); if(done)break;
-        buffer+=decoder.decode(value,{stream:true});
-        const frames=buffer.split("\n\n"); buffer=frames.pop()??"";
-        for(const frame of frames){
-          const event=frame.split("\n").find(x=>x.startsWith("event:"))?.slice(6).trim();
-          const dataLine=frame.split("\n").find(x=>x.startsWith("data:"));
-          if(!dataLine)continue;
-          const data=JSON.parse(dataLine.slice(5));
-          if(event==="token"){output+=data.text;setStreamText(output);}
-          if(event==="error")throw new Error(data.message||"Generation failed");
+      while(!terminal){
+        try{
+          const url=initial?"/api/spec/stream":`/api/spec/stream/resume?session_id=${encodeURIComponent(session.id)}&last_seq=${lastSeq}`;
+          const response=await fetch(url,initial?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:session.id,stage})}:undefined);
+          if(!response.ok||!response.body)throw new Error(await response.text());
+          if(initial){
+            const baseline=Number(response.headers.get("X-DSpec-Start-Seq")??"0");
+            if(Number.isFinite(baseline))lastSeq=Math.max(lastSeq,baseline);
+          }
+          const reader=response.body.getReader(); const decoder=new TextDecoder(); let buffer="";
+          while(true){
+            const {done,value}=await reader.read();
+            if(done)break;
+            buffer+=decoder.decode(value,{stream:true});
+            const frames=buffer.split("\n\n"); buffer=frames.pop()??"";
+            for(const frame of frames){
+              const event=frame.split("\n").find(x=>x.startsWith("event:"))?.slice(6).trim();
+              const dataLine=frame.split("\n").find(x=>x.startsWith("data:"));
+              if(!dataLine)continue;
+              const data=JSON.parse(dataLine.slice(5));
+              if(typeof data.seq==="number")lastSeq=Math.max(lastSeq,data.seq);
+              if(event==="token"){output+=data.text??"";setStreamText(output);}
+              if(event==="complete"){terminal=true;break;}
+              if(event==="error"){
+                providerFailure=true;terminal=true;
+                throw new Error(data.message||"Generation failed; saved input state was preserved.");
+              }
+            }
+            if(terminal)break;
+          }
+          if(!terminal)throw new Error("Generation stream disconnected before completion.");
+        }catch(e){
+          if(providerFailure||terminal)throw e;
+          if(attempt>=5)throw e;
+          attempt+=1;
+          setBusy(`Reconnecting stream (${attempt}/5)`);
+          await sleep(Math.min(500*Math.pow(1.5,attempt-1),5000));
+          initial=false;
+          continue;
         }
       }
       await loadSession(session.id); setStreamText("");
@@ -168,7 +197,16 @@ export default function Home(){
   }
 
   async function copyDraft(){
-    await navigator.clipboard.writeText(draft); 
+    await navigator.clipboard.writeText(draft);
+  }
+
+  async function copyAll(){
+    if(!session)return;
+    const text=STAGES.map(s=>{
+      const content=session.specs[s]?.content??"NOT DRAFTED";
+      return `<dspec-tier name="${s}">\n${content}\n</dspec-tier>`;
+    }).join("\n\n");
+    await navigator.clipboard.writeText(`# DSpec consolidated instruction set: ${session.bundle_name}\n\n${text}`);
   }
 
   const approvedCount=useMemo(()=>session?STAGES.filter(s=>session.specs[s]?.approval_status==="approved").length:0,[session]);
@@ -248,6 +286,7 @@ export default function Home(){
               <section className="panel p-4">
                 <div className="mb-3 flex items-center gap-2 font-semibold"><Archive className="h-4 w-4 text-cyan-300"/>Handoff</div>
                 <p className="mb-3 text-xs leading-5 text-slate-500">Approved export includes all four tiers plus Claude, Cursor, Codex and ChatGPT agent instructions. Draft exports are explicitly labeled.</p>
+                <button className="btn mb-2 w-full" onClick={()=>void copyAll()}><Clipboard className="mr-1 inline h-3.5 w-3.5"/>Copy all tiers</button>
                 <a className="btn block text-center" href={session?`/api/export/${session.id}`:"#"}>Export approved bundle</a>
                 <a className="mt-2 block text-center text-xs text-slate-500 hover:text-slate-300" href={session?`/api/export/${session.id}?allow_draft=true`:"#"}>Export labeled draft</a>
               </section>
@@ -330,10 +369,11 @@ function ReviewBoard({review,status,busy,onReview,onApprove}:{review:Review;stat
   const score=review.score??0; const fixes=review.must_fix??[];
   return <section className="panel p-4">
     <div className="mb-3 flex items-center justify-between"><div className="font-semibold">Review board</div><span className={`text-sm font-bold ${scoreTone(score)}`}>{Math.round(score*100)}%</span></div>
+    {review.semantic_status&&<div className={`mb-3 rounded-lg px-2 py-1.5 text-xs ${review.semantic_status==="PASS"?"bg-emerald-500/10 text-emerald-300":review.semantic_status==="NOT TESTED"?"bg-amber-500/10 text-amber-200":"bg-rose-500/10 text-rose-200"}`}>Semantic review: {review.semantic_status}{review.semantic_error?` — ${review.semantic_error}`:""}</div>}
     <div className="mb-3 h-1.5 overflow-hidden rounded bg-slate-800"><div className={`h-full ${score>=.9?"bg-emerald-400":score>=.7?"bg-amber-400":"bg-rose-400"}`} style={{width:`${Math.round(score*100)}%`}}/></div>
     {status==="approved"&&<div className="mb-3 flex items-center gap-2 rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-300"><Check className="h-4 w-4"/>Approved revision</div>}
     {!!fixes.length?<div className="space-y-2">{fixes.slice(0,4).map(x=><div key={x.id} className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-2"><div className="text-xs font-semibold text-rose-200">{x.label}</div><div className="mt-1 text-[11px] leading-4 text-slate-500">{x.recommendation??x.detail}</div></div>)}</div>:<div className="mb-3 text-xs text-slate-500">{review.score!==undefined?"No deterministic must-fix items. Approval still represents explicit user/reviewer promotion.":"Run review after creating a draft."}</div>}
-    <div className="mt-3 grid grid-cols-2 gap-2"><button className="btn" disabled={!!busy} onClick={()=>void onReview()}>Review</button><button className="btn btn-primary" disabled={!!busy||score<.9} onClick={()=>void onApprove()}>Approve</button></div>
+    <div className="mt-3 grid grid-cols-2 gap-2"><button className="btn" disabled={!!busy} onClick={()=>void onReview()}>Review</button><button className="btn btn-primary" disabled={!!busy||score<.9||review.passed!==true} onClick={()=>void onApprove()}>Approve</button></div>
   </section>
 }
 
