@@ -234,6 +234,12 @@ def answer_save(req: AnswerSave) -> dict[str, bool]:
     return {"saved": True}
 
 
+@app.post("/api/spec/draft")
+def spec_draft(req: SpecSave) -> dict[str, Any]:
+    _session_or_404(req.session_id)
+    return db.save_draft_buffer(req.session_id, req.stage, req.content)
+
+
 @app.post("/api/spec/save")
 def spec_save(req: SpecSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
