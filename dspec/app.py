@@ -212,10 +212,22 @@ def spec_save(req: SpecSave) -> dict[str, Any]:
 
 
 @app.post("/api/spec/review")
-def spec_review(req: ReviewRequest) -> dict[str, Any]:
+async def spec_review(req: ReviewRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     spec = _latest_spec(session, req.stage)
-    review = evaluate(req.stage, spec["content"])
+    try:
+        review = await engine.semantic_review(session, req.stage, spec["content"])
+    except Exception as exc:
+        structural = evaluate(req.stage, spec["content"])
+        review = {
+            "structural": structural,
+            "semantic": None,
+            "score": structural["score"],
+            "threshold": 0.90,
+            "passed": False,
+            "semantic_status": "NOT TESTED",
+            "semantic_error": str(exc)[:240],
+        }
     db.update_spec_review(spec["id"], review["score"], review)
     return review
 
@@ -224,12 +236,28 @@ def spec_review(req: ReviewRequest) -> dict[str, Any]:
 def spec_approve(req: ApproveRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     spec = _latest_spec(session, req.stage)
-    review = evaluate(req.stage, spec["content"])
-    if not review["passed"]:
-        db.update_spec_review(spec["id"], review["score"], review, "draft")
-        raise HTTPException(409, {"error": "quality_gate_failed", "review": review})
-    db.update_spec_review(spec["id"], review["score"], review, "approved")
-    return {"approved": True, "stage": req.stage, "quality_score": review["score"], "review": review}
+    structural = evaluate(req.stage, spec["content"])
+    prior_review = spec.get("review") or {}
+    semantic_ok = prior_review.get("semantic_status") == "PASS" and prior_review.get("passed") is True
+    if not structural["passed"] or not semantic_ok:
+        combined = prior_review if prior_review else {
+            "structural": structural,
+            "semantic": None,
+            "score": structural["score"],
+            "passed": False,
+            "semantic_status": "NOT TESTED",
+        }
+        db.update_spec_review(spec["id"], float(combined.get("score", structural["score"])), combined, "draft")
+        raise HTTPException(
+            409,
+            {
+                "error": "quality_gate_failed" if not structural["passed"] else "semantic_review_required",
+                "review": combined,
+            },
+        )
+    score = float(prior_review.get("score", structural["score"]))
+    db.update_spec_review(spec["id"], score, prior_review, "approved")
+    return {"approved": True, "stage": req.stage, "quality_score": score, "review": prior_review}
 
 
 @app.post("/api/spec/generate")
