@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from . import db
 from .audit import scan_repository
@@ -20,6 +20,7 @@ from .dspy_signatures import status as dspy_status
 from .exporter import build_bundle
 from .provider import ProviderGateway, public_discovery
 from .quality import evaluate
+from .logging_utils import configure_logging
 from .spec_engine import SpecEngine
 
 app = FastAPI(title="DSpec AI", version=APP_VERSION, docs_url="/api/docs", redoc_url=None)
@@ -64,7 +65,7 @@ class ApproveRequest(BaseModel):
 class ProviderSelect(BaseModel):
     provider: Literal["lm_studio", "ollama", "openai", "anthropic"]
     model: str = Field(min_length=1, max_length=200)
-    api_key: str | None = Field(default=None, min_length=8)
+    api_key: SecretStr | None = None
 
 
 class GenerateRequest(BaseModel):
@@ -148,6 +149,7 @@ async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str
 
 @app.on_event("startup")
 def _startup() -> None:
+    configure_logging()
     db.init_db()
 
 
@@ -185,7 +187,8 @@ async def providers() -> dict[str, Any]:
 @app.post("/api/provider/select")
 async def provider_select(req: ProviderSelect) -> dict[str, Any]:
     try:
-        selected = gateway.select(req.provider, req.model, req.api_key)
+        api_key = req.api_key.get_secret_value() if req.api_key else None
+        selected = gateway.select(req.provider, req.model, api_key)
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"success": True, "active_provider": selected["provider"], "active_model": selected["model"], "credential_storage": selected["credential_storage"]}
