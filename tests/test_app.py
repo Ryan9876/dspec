@@ -90,7 +90,19 @@ def test_quality_fixture_passes(stage: str):
     assert review["passed"] is True
 
 
-def test_transactional_four_tier_review_approval_and_export(client: TestClient):
+def test_transactional_four_tier_review_approval_and_export(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    async def semantic_pass(session, stage, content):
+        structural = evaluate(stage, content)
+        return {
+            "structural": structural,
+            "semantic": {"score": 0.97, "must_fix": [], "recommendations": [], "consistency_issues": []},
+            "score": min(structural["score"], 0.97),
+            "threshold": 0.90,
+            "passed": structural["passed"],
+            "semantic_status": "PASS",
+            "provider": {"provider": "fixture", "model": "fixture"},
+        }
+    monkeypatch.setattr(engine, "semantic_review", semantic_pass)
     sid = create_session(client)
     for stage, content in DRAFTS.items():
         saved = client.post("/api/spec/save", json={"session_id": sid, "stage": stage, "content": content})
@@ -199,3 +211,19 @@ def test_dspy_discovery_endpoint_returns_structured_mcq(client: TestClient, monk
 def test_trusted_host_rejects_external_host(client: TestClient):
     r = client.get("/api/health", headers={"host": "example.com"})
     assert r.status_code == 400
+
+
+def test_review_unavailable_remains_not_tested(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    sid = create_session(client, "review-unavailable")
+    client.post("/api/spec/save", json={"session_id": sid, "stage": "requirements", "content": DRAFTS["requirements"]})
+
+    async def unavailable(session, stage, content):
+        raise RuntimeError("provider offline")
+
+    monkeypatch.setattr(engine, "semantic_review", unavailable)
+    review = client.post("/api/spec/review", json={"session_id": sid, "stage": "requirements"})
+    assert review.status_code == 200
+    assert review.json()["semantic_status"] == "NOT TESTED"
+    assert review.json()["passed"] is False
+    approval = client.post("/api/spec/approve", json={"session_id": sid, "stage": "requirements"})
+    assert approval.status_code == 409
