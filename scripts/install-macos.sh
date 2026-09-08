@@ -26,6 +26,9 @@ fi
 rm -rf "$INSTALL"
 mkdir -p "$INSTALL"
 cp -R "$ROOT/dspec" "$ROOT/frontend" "$ROOT/scripts" "$ROOT/pyproject.toml" "$ROOT/requirements.txt" "$ROOT/README.md" "$INSTALL/"
+if [[ -d "$ROOT/docs" ]]; then
+  cp -R "$ROOT/docs" "$INSTALL/docs"
+fi
 if [[ -f "$ROOT/build-info.json" ]]; then
   cp "$ROOT/build-info.json" "$INSTALL/build-info.json"
 fi
