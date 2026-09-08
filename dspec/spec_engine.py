@@ -13,9 +13,10 @@ from .dspy_signatures import (
     SemanticSpecReview,
     SpecToTasks,
 )
+from .dspy_runtime import make_lm
+from .optimization_store import load_promoted_state
 from .provider import ProviderGateway
 from .quality import evaluate
-from .security import load_api_key
 
 _OUTPUT_FIELDS = {
     "constitution": "constitution_spec",
@@ -36,31 +37,7 @@ class SpecEngine:
         self.gateway = gateway
 
     def _lm(self, selected: dict[str, str]):
-        if not DSPY_AVAILABLE:
-            raise RuntimeError("DSPy is not installed. Install the governed runtime dependencies before generation.")
-        import dspy
-
-        provider = selected["provider"]
-        model = selected["model"]
-        if provider == "lm_studio":
-            from os import environ
-            base = environ.get("DSPEC_LM_STUDIO_URL", "http://127.0.0.1:1234").rstrip("/") + "/v1"
-            return dspy.LM(f"openai/{model}", api_base=base, api_key="lm-studio", model_type="chat", max_tokens=24000)
-        if provider == "ollama":
-            from os import environ
-            base = environ.get("DSPEC_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-            return dspy.LM(f"ollama_chat/{model}", api_base=base, api_key="", max_tokens=24000)
-        if provider == "openai":
-            key = load_api_key("openai")
-            if not key:
-                raise RuntimeError("OpenAI API key is not configured.")
-            return dspy.LM(f"openai/{model}", api_key=key, max_tokens=24000)
-        if provider == "anthropic":
-            key = load_api_key("anthropic")
-            if not key:
-                raise RuntimeError("Anthropic API key is not configured.")
-            return dspy.LM(f"anthropic/{model}", api_key=key, max_tokens=24000)
-        raise ValueError(f"Unsupported provider: {provider}")
+        return make_lm(selected["provider"], selected["model"])
 
     @staticmethod
     def _answers(session: dict[str, Any], stage: str) -> str:
@@ -123,6 +100,11 @@ class SpecEngine:
         signature = _SIGNATURES[stage]
         output_field = _OUTPUT_FIELDS[stage]
         base = dspy.ChainOfThought(signature)
+        promoted = load_promoted_state(base, stage)
+        # Saved DSPy state can include the LM that was used during compilation.
+        # Runtime provider selection remains authoritative, so always rebind the
+        # loaded program to the currently selected LM before inference.
+        base.set_lm(lm)
 
         def reward(_args: dict[str, Any], pred: dspy.Prediction) -> float:
             content = str(getattr(pred, output_field, "") or "")
@@ -146,7 +128,17 @@ class SpecEngine:
             semantic_data = {"reported": False}
 
         structural = evaluate(stage, content)
-        review = {**structural, "semantic_assessment": semantic_data, "refinement": {"module": "dspy.Refine", "attempt_limit": 3, "threshold": 0.90}}
+        review = {
+            **structural,
+            "semantic_assessment": semantic_data,
+            "refinement": {"module": "dspy.Refine", "attempt_limit": 3, "threshold": 0.90},
+            "optimization": {
+                "state": "PROMOTED" if promoted else "UNOPTIMIZED",
+                "candidate_id": promoted.get("candidate_id") if promoted else None,
+                "optimizer": promoted.get("optimizer") if promoted else None,
+                "program_state_sha256": promoted.get("program_state_sha256") if promoted else None,
+            },
+        }
         metrics = {
             "provider": selected["provider"],
             "model": selected["model"],

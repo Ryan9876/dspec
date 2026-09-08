@@ -78,3 +78,37 @@ jobs:
           path: evidence/browser-smoke.png
           if-no-files-found: ignore
           retention-days: 14
+
+  optimizer-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install optimizer extras
+        run: python -m pip install -e ".[dev,optimize]"
+      - name: Verify current DSPy MIPROv2 contract
+        run: |
+          python - <<'PY'
+          import inspect
+          import optuna
+          import dspy
+          from dspy.teleprompt import MIPROv2
+
+          compile_params = inspect.signature(MIPROv2.compile).parameters
+          assert "trainset" in compile_params
+          assert "valset" in compile_params
+          assert hasattr(dspy.ChainOfThought("question -> answer"), "save")
+          assert hasattr(dspy.ChainOfThought("question -> answer"), "load")
+          print("DSPy", getattr(dspy, "__version__", "UNKNOWN"))
+          print("Optuna", optuna.__version__)
+          PY
+      - name: Validate optimizer CLI without model execution
+        run: |
+          cat > /tmp/dspec-reviewed.jsonl <<'EOF'
+          {"schema_version":1,"source_id":"train-1","stage":"constitution","split":"train","reviewed":true,"inputs":{"raw_idea_description":"Build a local governed specification tool.","security_isolation_preferences":"Keep credentials local and require explicit runtime evidence."},"expected_spec":"# Project Constitution\n\n## Security\nAll credentials remain local and authorization boundaries are explicit.\n\n## Quality and Validation\nEvery material behavior requires acceptance criteria and objective tests.\n\n## Runtime\nThe application binds only to 127.0.0.1 on port 3210 and deployment verification is separate.","required_markers":["Security","acceptance","127.0.0.1"]}
+          {"schema_version":1,"source_id":"validation-1","stage":"constitution","split":"validation","reviewed":true,"inputs":{"raw_idea_description":"Create a spec-first local delivery workspace.","security_isolation_preferences":"No telemetry, local secrets, explicit lifecycle state."},"expected_spec":"# Project Constitution\n\n## Security\nSecrets remain local and credential handling is explicit.\n\n## Quality and Validation\nAcceptance criteria and test evidence are required before promotion.\n\n## Runtime\nThe runtime is loopback-only at 127.0.0.1:3210 and deployment is distinct from verification.","required_markers":["Security","Acceptance","127.0.0.1"]}
+          EOF
+          dspec-optimize validate --dataset /tmp/dspec-reviewed.jsonl --stage constitution

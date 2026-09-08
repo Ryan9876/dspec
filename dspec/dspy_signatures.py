@@ -87,9 +87,17 @@ except Exception:
 
 
 def status() -> dict[str, Any]:
+    from .optimization_store import promoted_status
+
+    optimization = promoted_status()
     return {
         "available": DSPY_AVAILABLE,
-        "optimization": "UNOPTIMIZED",
+        "optimization": optimization["overall"],
+        "optimization_stages": optimization["stages"],
         "refinement": "Refine",
-        "mipro_v2": "BLOCKED_PENDING_REVIEWED_TRAINING_SET",
+        "mipro_v2": (
+            "PROMOTED_STATE_PRESENT"
+            if optimization["promoted_stage_count"]
+            else "BLOCKED_PENDING_REVIEWED_TRAINING_SET"
+        ),
     }

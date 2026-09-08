@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 tray = ["rumps>=0.4,<1"]
+optimize = ["dspy[optuna]>=3,<4"]
 dev = ["pytest>=8,<10", "playwright>=1.49,<2"]
 
 [project.scripts]
