@@ -156,9 +156,13 @@ def _verify_and_apply_release() -> str:
 def start(open_browser: bool = True) -> dict:
     health = _health()
     if health:
+        root = _source_root()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+        tray_pid = _start_tray(root, env)
         if open_browser:
             subprocess.Popen(["open", f"http://localhost:{PORT}"] if sys.platform == "darwin" else ["xdg-open", f"http://localhost:{PORT}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return {"status": "already_running", "health": health}
+        return {"status": "already_running", "tray_pid": tray_pid, "health": health}
     occupied = _port_pid()
     if occupied:
         if not _verify_dspec_pid(occupied):
