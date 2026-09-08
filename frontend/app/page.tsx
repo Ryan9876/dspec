@@ -252,7 +252,7 @@ export default function Home(){
           <div><div className="font-semibold tracking-wide">DSpec AI</div><div className="text-xs text-slate-500">spec-first delivery workspace</div></div>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <button className="badge bg-slate-950/60" onClick={()=>setProviderOpen(true)}>
+          <button className="badge bg-slate-950/60" aria-label="LLM provider switcher" onClick={()=>setProviderOpen(true)}>
             <span className={`dot ${health?"ok":"bad"}`}/><Cpu className="h-3.5 w-3.5"/>
             {health?`${health.active_provider.provider} · ${health.active_provider.model}`:"backend offline"}
             <Settings2 className="h-3.5 w-3.5"/>
@@ -266,7 +266,7 @@ export default function Home(){
     <div className="mx-auto grid max-w-[1540px] grid-cols-[250px_minmax(0,1fr)] gap-5 px-5 py-5">
       <aside className="space-y-4">
         <section className="panel p-3">
-          <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase tracking-widest text-slate-500">Projects</span><button className="btn !p-1.5" onClick={newProject}><Plus className="h-4 w-4"/></button></div>
+          <div className="mb-2 flex items-center justify-between"><span className="text-xs font-semibold uppercase tracking-widest text-slate-500">Projects</span><button className="btn !p-1.5" aria-label="New project" onClick={newProject}><Plus className="h-4 w-4"/></button></div>
           <div className="space-y-1">
             {sessions.map(s=><button key={s.id} onClick={()=>void loadSession(s.id)} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${session?.id===s.id?"bg-indigo-500/15 text-indigo-200 ring-1 ring-indigo-400/30":"text-slate-400 hover:bg-slate-800/60"}`}>{s.bundle_name}</button>)}
             {!sessions.length&&<div className="px-2 py-5 text-center text-xs text-slate-600">Create the first governed project.</div>}
