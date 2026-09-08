@@ -1,4 +1,5 @@
 name: DSpec CI
+# validation checkpoint: DS-CHG-001 reconstruction
 
 on:
   push:
