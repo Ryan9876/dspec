@@ -102,6 +102,7 @@ def main() -> None:
             page.reload(wait_until="domcontentloaded")
             expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible(timeout=10_000)
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible()
+            expect(page.locator(".monaco-editor")).to_be_visible(timeout=15_000)
 
             SCREENSHOT.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(SCREENSHOT), full_page=True)
