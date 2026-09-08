@@ -16,7 +16,7 @@ type Session = {
     id: string; content: string; revision_number: number; version_number: number;
     quality_score: number; approval_status: string; review: Review;
   }>>;
-  answers: Array<{stage: Stage; question_id: string; selected_option_id?: string; free_text_payload?: string}>;
+  answers: Array<{stage: Stage; question_id: string; selected_option_id?: string; free_text_payload?: string; updated_at?: string}>;
 };
 type Review = {
   score?: number; threshold?: number; passed?: boolean;
@@ -24,6 +24,12 @@ type Review = {
   must_fix?: Array<{id:string;label:string;detail:string;recommendation?:string}>;
   recommendations?: string[];
 };
+type DiscoveryOption = { id:string; label:string; rationale:string };
+type DiscoveryQuestion = {
+  id:string; question:string; why_it_matters:string; options:DiscoveryOption[];
+  recommended_option_id:string; allow_free_text:boolean;
+};
+type DiscoveryResult = { questions:DiscoveryQuestion[]; gaps_found:string[] };
 type Health = {
   status: string; version: string; port: number; active_provider: {provider:string;model:string};
   detected_local_services?: Record<string,{online:boolean;models:string[]}>;
@@ -119,9 +125,9 @@ export default function Home(){
     saveTimer.current=setTimeout(()=>{void saveDraft(next)},850);
   }
 
-  async function saveAssistant(choice:string, text:string){
+  async function saveAssistant(questionId:string, choice:string, text:string){
     if(!session)return;
-    await api("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:`assistant-${stage}`,selected_option_id:choice,free_text_payload:text})});
+    await api("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
     await loadSession(session.id);
   }
 
@@ -266,19 +272,58 @@ function EmptyState({onCreate}:{onCreate:()=>void}){
   return <div className="panel grid min-h-[540px] place-items-center p-10 text-center"><div><ShieldCheck className="mx-auto mb-4 h-10 w-10 text-indigo-300"/><h2 className="text-xl font-semibold">Create a governed DSpec project</h2><p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Move from product intent through Constitution, Requirements, Solution and executable Tasks while preserving explicit review and approval state.</p><button className="btn btn-primary mt-5" onClick={onCreate}>Create project</button></div></div>
 }
 
-function AssistantCard({stage,session,onSave}:{stage:Stage;session:Session;onSave:(choice:string,text:string)=>Promise<void>}){
+function AssistantCard({stage,session,onSave}:{stage:Stage;session:Session;onSave:(questionId:string,choice:string,text:string)=>Promise<void>}){
   const saved=session.answers.find(a=>a.stage===stage&&a.question_id===`assistant-${stage}`);
   const [choice,setChoice]=useState(saved?.selected_option_id??ASSIST[stage].choices[2]);
   const [text,setText]=useState(saved?.free_text_payload??"");
-  useEffect(()=>{setChoice(saved?.selected_option_id??ASSIST[stage].choices[2]);setText(saved?.free_text_payload??"")},[stage,session.id,saved?.updated_at]);
+  const [discovery,setDiscovery]=useState<DiscoveryResult|null>(null);
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState("");
+  useEffect(()=>{
+    setChoice(saved?.selected_option_id??ASSIST[stage].choices[2]);
+    setText(saved?.free_text_payload??"");
+    setDiscovery(null);
+    setErr("");
+  },[stage,session.id,saved?.updated_at]);
+
+  async function analyze(){
+    setLoading(true);setErr("");
+    try{
+      const result=await api<DiscoveryResult>("/api/assist/questions",{method:"POST",body:JSON.stringify({session_id:session.id,stage})});
+      setDiscovery(result);
+    }catch(e){setErr(String(e));}
+    finally{setLoading(false);}
+  }
+
   return <section className="panel p-4">
     <div className="mb-1 flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-indigo-300"/>Field assistant</div>
     <div className="mb-3 text-xs text-slate-500">{ASSIST[stage].title}</div>
     <p className="mb-3 text-sm leading-5 text-slate-300">{ASSIST[stage].prompt}</p>
     <div className="space-y-1.5">{ASSIST[stage].choices.map(c=><label key={c} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400 hover:border-slate-700"><input type="radio" checked={choice===c} onChange={()=>setChoice(c)} className="mt-0.5"/><span>{c}</span></label>)}</div>
     <textarea className="input mt-3 min-h-24 resize-y text-xs" value={text} onChange={e=>setText(e.target.value)} placeholder="Add product-level context or constraints…"/>
-    <button className="btn mt-2 w-full" onClick={()=>void onSave(choice,text)}>Save discovery input</button>
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      <button className="btn" onClick={()=>void onSave(`assistant-${stage}`,choice,text)}>Save input</button>
+      <button className="btn btn-primary flex items-center justify-center gap-1.5" disabled={loading} onClick={()=>void analyze()}>{loading?<LoaderCircle className="h-4 w-4 animate-spin"/>:<Sparkles className="h-4 w-4"/>}Analyze gaps</button>
+    </div>
+    {err&&<div className="mt-3 text-xs text-rose-300">{err}</div>}
+    {discovery&&<div className="mt-4 border-t border-slate-800 pt-4">
+      {!!discovery.gaps_found?.length&&<div className="mb-3"><div className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Gaps detected</div>{discovery.gaps_found.slice(0,4).map(g=><div key={g} className="mt-1 text-xs leading-5 text-slate-400">• {g}</div>)}</div>}
+      <div className="space-y-3">{discovery.questions.slice(0,3).map(q=><DynamicQuestion key={q.id} question={q} saved={session.answers.find(a=>a.stage===stage&&a.question_id===q.id)} onSave={onSave}/>)}</div>
+    </div>}
   </section>
+}
+
+function DynamicQuestion({question,saved,onSave}:{question:DiscoveryQuestion;saved?:Session["answers"][number];onSave:(questionId:string,choice:string,text:string)=>Promise<void>}){
+  const [choice,setChoice]=useState(saved?.selected_option_id??question.recommended_option_id);
+  const [text,setText]=useState(saved?.free_text_payload??"");
+  const [savedState,setSavedState]=useState(false);
+  return <div className="rounded-xl border border-indigo-400/15 bg-indigo-500/5 p-3">
+    <div className="text-sm font-semibold text-slate-200">{question.question}</div>
+    <div className="mt-1 text-[11px] leading-4 text-slate-500">{question.why_it_matters}</div>
+    <div className="mt-2 space-y-1.5">{question.options.map(o=><label key={o.id} className="block cursor-pointer rounded-lg border border-slate-800 p-2 text-xs hover:border-slate-700"><span className="flex items-start gap-2"><input className="mt-0.5" type="radio" checked={choice===o.id} onChange={()=>{setChoice(o.id);setSavedState(false)}}/><span><span className="text-slate-300">{o.label}{o.id===question.recommended_option_id&&<span className="ml-1 text-cyan-300">Recommended</span>}</span><span className="mt-0.5 block text-[11px] leading-4 text-slate-600">{o.rationale}</span></span></span></label>)}</div>
+    {question.allow_free_text&&<textarea className="input mt-2 min-h-16 text-xs" value={text} onChange={e=>{setText(e.target.value);setSavedState(false)}} placeholder="Optional context or alternative…"/>}
+    <button className="btn mt-2 w-full" onClick={async()=>{await onSave(question.id,choice??"",text);setSavedState(true)}}>{savedState?"Saved":"Save answer"}</button>
+  </div>
 }
 
 function ReviewBoard({review,status,busy,onReview,onApprove}:{review:Review;status?:string;busy:string|null;onReview:()=>Promise<void>;onApprove:()=>Promise<void>}){
