@@ -34,3 +34,4 @@ jobs:
           git add -A
           git commit -m "Recover DS-CHG-001 prototype source baseline"
           git push origin HEAD:recovery/ds-chg-001
+# retrigger after all six payload chunks were staged
