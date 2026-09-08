@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
@@ -23,7 +24,15 @@ from .quality import evaluate
 from .logging_utils import configure_logging
 from .spec_engine import SpecEngine
 
-app = FastAPI(title="DSpec AI", version=APP_VERSION, docs_url="/api/docs", redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    configure_logging()
+    db.init_db()
+    yield
+
+
+app = FastAPI(title="DSpec AI", version=APP_VERSION, docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 gateway = ProviderGateway()
 engine = SpecEngine(gateway)
@@ -145,12 +154,6 @@ async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str
     content, metrics, review = await engine.generate(session, req.stage, req.instructions)
     spec = db.save_spec(req.session_id, req.stage, content, review["score"], review, "draft")
     return content, metrics, spec
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    configure_logging()
-    db.init_db()
 
 
 @app.get("/api/health")
