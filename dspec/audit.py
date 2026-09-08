@@ -127,6 +127,39 @@ def scan_repository(repo_path: str, ignore_patterns: list[str] | None = None, us
     if any(f.endswith(".tsx") for f in names_lower):
         detected_stack["frontend"] = "TypeScript/React-family files detected"
 
+    remediation = []
+    for gap in gaps:
+        if "governance" in gap.lower():
+            remediation.append("Create an explicit constitution/governance tier covering security, runtime, quality gates, and exclusions.")
+        elif "requirements" in gap.lower():
+            remediation.append("Create requirements with stable IDs, user journeys, failure behavior, and observable acceptance criteria.")
+        elif "solution" in gap.lower() or "architecture" in gap.lower():
+            remediation.append("Create a solution tier with components, typed schemas, API/error contracts, state transitions, and rollback considerations.")
+        elif "task" in gap.lower():
+            remediation.append("Create ordered tasks mapped to requirement IDs with a concrete verification command or assertion per material task.")
+        elif "test" in gap.lower():
+            remediation.append("Add automated tests for critical logic and workflows, then record exact commands and expected evidence.")
+        elif "actions" in gap.lower():
+            remediation.append("Add CI that executes the repository's build/static checks and relevant automated tests.")
+        else:
+            remediation.append(f"Resolve: {gap}")
+
+    upgrade_lines = [
+        "# DSpec Upgrade Specification",
+        "",
+        "## Structural gaps",
+        *([f"- {gap}" for gap in gaps] if gaps else ["- No high-confidence structural gap was detected by this bounded scan."]),
+        "",
+        "## Required remediation",
+        *([f"{index + 1}. {item}" for index, item in enumerate(remediation)] if remediation else ["1. Preserve current structure; perform deeper semantic review before changing architecture."]),
+        "",
+        "## Dependency security",
+        "Dependency CVE/vulnerability verification: NOT TESTED. This bounded scanner does not query external vulnerability databases and must not label dependencies safe or vulnerable without separate evidence.",
+        "",
+        "## Verification",
+        "Re-run the repository audit after remediation and execute the project-specific build/test commands identified by the resulting governed task tier.",
+    ]
+
     duration = int((time.perf_counter() - started) * 1000)
     return {
         "repo_path": str(root),
@@ -144,5 +177,6 @@ def scan_repository(repo_path: str, ignore_patterns: list[str] | None = None, us
         "detected_stack": detected_stack,
         "critical_gaps": gaps,
         "structural_diff_md": "\n".join(f"- {g}" for g in gaps) if gaps else "- No high-confidence structural gaps detected by bounded static evidence.",
+        "upgrade_spec_md": "\n".join(upgrade_lines),
         "assessment_scope": "Bounded static file evidence only; not a security certification, CVE scan, or deep semantic code review.",
     }
