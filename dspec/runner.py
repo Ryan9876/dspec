@@ -39,6 +39,46 @@ def _read_pid() -> int | None:
         return None
 
 
+def _tray_pid_path() -> Path:
+    return runtime_dir() / "tray.pid"
+
+
+def _read_tray_pid() -> int | None:
+    try:
+        return int(_tray_pid_path().read_text().strip())
+    except Exception:
+        return None
+
+
+def _start_tray(root: Path, env: dict[str, str]) -> int | None:
+    if sys.platform != "darwin" or os.environ.get("DSPEC_DISABLE_TRAY") == "1":
+        return None
+    current = _read_tray_pid()
+    if current and _pid_alive(current):
+        return current
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "dspec.tray"],
+        cwd=root,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return proc.pid
+
+
+def _stop_tray() -> None:
+    pid = _read_tray_pid()
+    if not pid:
+        return
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    _tray_pid_path().unlink(missing_ok=True)
+
+
 def _verify_dspec_pid(pid: int) -> bool:
     try:
         out = subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True).strip().lower()
@@ -135,10 +175,11 @@ def start(open_browser: bool = True) -> dict:
     for _ in range(300):
         health = _health(0.5)
         if health:
+            tray_pid = _start_tray(root, env)
             if open_browser:
                 cmd = ["open", f"http://localhost:{PORT}"] if sys.platform == "darwin" else ["xdg-open", f"http://localhost:{PORT}"]
                 subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return {"status": "started", "pid": proc.pid, "release": release, "health": health}
+            return {"status": "started", "pid": proc.pid, "tray_pid": tray_pid, "release": release, "health": health}
         if proc.poll() is not None:
             raise RuntimeError(f"DSpec exited during startup with code {proc.returncode}. See {log_path()}")
         time.sleep(0.1)
@@ -146,25 +187,38 @@ def start(open_browser: bool = True) -> dict:
     raise RuntimeError("DSpec did not become healthy within 30 seconds")
 
 
-def stop() -> dict:
+def stop(include_tray: bool = True) -> dict:
     pid = _read_pid() or _port_pid()
     if not pid:
+        if include_tray:
+            _stop_tray()
         return {"status": "not_running"}
     if not _verify_dspec_pid(pid):
         raise RuntimeError(f"PID {pid} does not look like DSpec; refusing to terminate")
     os.kill(pid, signal.SIGTERM)
+    outcome = "stopped"
     for _ in range(50):
         if not _pid_alive(pid):
-            pid_path().unlink(missing_ok=True)
-            return {"status": "stopped", "pid": pid}
+            break
         time.sleep(0.1)
-    os.kill(pid, signal.SIGKILL)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        outcome = "killed_after_timeout"
     pid_path().unlink(missing_ok=True)
-    return {"status": "killed_after_timeout", "pid": pid}
+    if include_tray:
+        _stop_tray()
+    return {"status": outcome, "pid": pid}
 
 
 def status() -> dict:
-    return {"health": _health(), "pid": _read_pid(), "port_pid": _port_pid(), "home": str(dspec_home()), "log": str(log_path())}
+    return {
+        "health": _health(),
+        "pid": _read_pid(),
+        "port_pid": _port_pid(),
+        "tray_pid": _read_tray_pid(),
+        "home": str(dspec_home()),
+        "log": str(log_path()),
+    }
 
 
 def cli() -> None:
