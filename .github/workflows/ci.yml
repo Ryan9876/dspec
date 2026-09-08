@@ -113,8 +113,42 @@ jobs:
           EOF
           dspec-optimize validate --dataset /tmp/dspec-reviewed.jsonl --stage constitution
 
+  macos-contract:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build frontend static export
+        working-directory: frontend
+        run: |
+          npm install
+          npm run typecheck
+          npm run build
+      - name: Build candidate package
+        run: python scripts/build-package.py
+      - name: Verify macOS installer and core runtime contract
+        shell: bash
+        run: |
+          EXPECTED_BUILD="$(git rev-parse HEAD)"
+          python scripts/verify-macos-install.py --expected-build "$EXPECTED_BUILD"
+      - name: Upload macOS contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspec-macos-contract-${{ github.sha }}
+          path: evidence/macos-contract.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   package-candidate:
-    needs: [python, frontend, browser, optimizer-contract]
+    needs: [python, frontend, browser, optimizer-contract, macos-contract]
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
