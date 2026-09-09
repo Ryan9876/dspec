@@ -176,6 +176,30 @@ def main() -> None:
         record(results, "menu-bar tray GUI behavior", "NOT TESTED", "Tray intentionally disabled in headless CI")
 
         dspec_bin = install_root / "bin" / "dspec"
+        runner_probe = run(
+            [
+                str(venv_python),
+                "-c",
+                (
+                    "import json, os, dspec.runner as r; "
+                    "root=r._source_root(); "
+                    "print(json.dumps({'runner_file': r.__file__, 'source_root': str(root), "
+                    "'identity': r._root_identity(root), 'pythonpath': os.environ.get('PYTHONPATH')}))"
+                ),
+            ],
+            env={
+                **env,
+                "PYTHONPATH": str(install_root / "source") + (
+                    os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+                ),
+            },
+            timeout=30,
+        )
+        runner_probe_data = json.loads(runner_probe.stdout)
+        record(results, "installed runner source identity", "PASS", json.dumps(runner_probe_data, sort_keys=True))
+        if runner_probe_data.get("identity", {}).get("build_hash") != expected:
+            raise RuntimeError(f"Installed runner source identity mismatch: {runner_probe_data}")
+
         start_started = time.monotonic()
         start = run([str(dspec_bin), "start", "--no-browser"], env=env, timeout=75)
         start_data = json.loads(start.stdout)
