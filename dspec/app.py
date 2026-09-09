@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +37,16 @@ app = FastAPI(title="DSpec AI", version=APP_VERSION, docs_url="/api/docs", redoc
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 gateway = ProviderGateway()
 engine = SpecEngine(gateway)
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_: Request, exc: RequestValidationError) -> JSONResponse:
+    # Pydantic errors include raw rejected input, which can contain a write-only
+    # credential even before SecretStr validation succeeds.
+    return JSONResponse(status_code=422, content={"detail": [
+        {"loc": error["loc"], "type": error["type"], "msg": "Invalid value for this field."}
+        for error in exc.errors()
+    ]})
 
 
 @app.exception_handler(db.StateConflict)
@@ -207,7 +218,7 @@ async def provider_select(req: ProviderSelect) -> dict[str, Any]:
         api_key = req.api_key.get_secret_value() if req.api_key else None
         selected = gateway.select(req.provider, req.model, api_key)
     except (ValueError, RuntimeError) as exc:
-        raise HTTPException(422, str(exc)) from exc
+        raise HTTPException(422, "Provider settings could not be saved. Check the model, credential format, and local credential-store access.") from exc
     return {"success": True, "active_provider": selected["provider"], "active_model": selected["model"], "credential_storage": selected["credential_storage"]}
 
 
@@ -221,7 +232,7 @@ async def assist_questions(req: AssistRequest) -> dict[str, Any]:
             503,
             {
                 "error": "assistant_unavailable",
-                "message": str(exc),
+                "message": "The assistant could not reach the selected model. Check the provider connection and credentials, then retry.",
                 "state_preserved": True,
             },
         ) from exc
@@ -289,7 +300,7 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
             "must_fix": structural.get("must_fix", []),
             "recommendations": structural.get("recommendations", []),
             "semantic_status": "NOT TESTED",
-            "semantic_error": str(exc)[:240],
+            "semantic_error": "Semantic review could not complete. Check the selected provider connection and credentials, then retry.",
         }
     review["context_sha256"] = context
     with db.tx() as conn:
@@ -315,7 +326,7 @@ async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
             503,
             {
                 "error": "revision_unavailable",
-                "message": str(exc),
+                "message": "The revision could not complete. Check the selected provider connection and credentials, then retry.",
                 "state_preserved": True,
             },
         ) from exc
@@ -371,7 +382,7 @@ async def generate(req: GenerateRequest) -> dict[str, Any]:
     except db.StateConflict:
         raise
     except Exception as exc:
-        raise HTTPException(503, {"error": "generation_failed", "message": str(exc), "state_preserved": True, "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"]}) from exc
+        raise HTTPException(503, {"error": "generation_failed", "message": "Generation could not complete. Check the selected provider connection and credentials, then retry.", "state_preserved": True, "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"]}) from exc
     return {"content": text, "metrics": metrics, "spec": spec}
 
 
@@ -399,7 +410,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
         except Exception as exc:
             _record_event(req.session_id, "error", {
                 "error": "generation_failed",
-                "message": str(exc),
+                "message": str(exc) if isinstance(exc, db.StateConflict) else "Generation could not complete. Check the selected provider connection and credentials, then retry.",
                 "state_preserved": True,
                 "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"],
             })

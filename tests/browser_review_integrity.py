@@ -37,7 +37,7 @@ def main():
                 assert api.get(base + f"/api/export/{sid}").ok
                 page.goto(base)
                 expect(page.get_by_role("button", name="review-integrity", exact=True)).to_be_visible()
-                page.get_by_role("button", name="Requirements", exact=True).click()
+                page.get_by_role("button", name="Requirements").click()
                 expect(page.locator(".monaco-editor")).to_be_visible()
                 expect(page.get_by_text("4/4", exact=True)).to_be_visible()
                 expect(page.get_by_text("Approved revision", exact=True)).to_be_visible()
@@ -56,11 +56,11 @@ def main():
                 page.get_by_role("button", name="Approve", exact=True).click()
                 expect(page.get_by_text("2/4", exact=True)).to_be_visible()
                 expect(page.get_by_text("Approved revision", exact=True)).to_be_visible()
-                page.get_by_role("button", name="Tasks", exact=True).click()
+                page.get_by_role("button", name="Tasks").click()
                 expect(page.get_by_text("Semantic review: STALE", exact=False)).to_be_visible()
                 expect(page.get_by_role("button", name="Approve", exact=True)).to_be_disabled()
                 page.reload()
-                page.get_by_role("button", name="Tasks", exact=True).click()
+                page.get_by_role("button", name="Tasks").click()
                 expect(page.get_by_text("Semantic review: STALE", exact=False)).to_be_visible()
                 page.screenshot(path=str(evidence / "review-integrity.png"), full_page=True)
                 assert errors == [], errors

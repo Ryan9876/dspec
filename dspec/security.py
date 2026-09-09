@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -39,11 +40,17 @@ def _read_fallback() -> dict[str, Any]:
 def _write_fallback(data: dict[str, Any]) -> None:
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    tmp.replace(path)
-    os.chmod(path, 0o600)
+    # mkstemp creates mode 0600 atomically, before any credentials are written.
+    # A unique name also avoids following a pre-existing temporary-file symlink.
+    fd, temporary = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(data, indent=2))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def store_api_key(provider: str, api_key: str) -> str:
