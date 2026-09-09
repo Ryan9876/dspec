@@ -143,7 +143,7 @@ The application must preserve saved specification content across browser refresh
 
             page.get_by_role("button", name="LLM provider switcher").click()
             expect(page.get_by_text("LLM provider", exact=True)).to_be_visible()
-            page.get_by_label("Provider").select_option("openai")
+            page.locator("label").filter(has_text="Provider").locator("select").select_option("openai")
             key_input = page.locator('input[type="password"]')
             expect(key_input).to_be_visible()
             key_input.fill("short")
