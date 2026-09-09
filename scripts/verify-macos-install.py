@@ -241,18 +241,83 @@ def main() -> None:
             raise RuntimeError(f"Port 3210 still occupied after cleanup: {final_port}")
         record(results, "runtime cleanup", "PASS", "port 3210 released")
 
+        # Exercise the actual compiled Start/Stop .app launchers through macOS
+        # LaunchServices. This verifies native app dispatch into the runner,
+        # backend startup/build identity, graceful shutdown, and that Stop does
+        # not terminate an unrelated sentinel process. The hosted runner is
+        # still not evidence of visible browser/menu-bar rendering.
+        launchctl = shutil.which("launchctl")
+        open_tool = shutil.which("open")
+        if not launchctl or not open_tool:
+            raise RuntimeError("LaunchServices contract requires launchctl and open.")
+
+        sentinel = subprocess.Popen(["sleep", "90"])
+        try:
+            run([launchctl, "setenv", "DSPEC_DISABLE_TRAY", "1"], check=False, timeout=20)
+
+            native_start_started = time.monotonic()
+            run([open_tool, "-W", str(apps / "Start DSpec.app")], timeout=90)
+            native_health = wait_health(True, 45)
+            if native_health is None or native_health.get("build_hash") != expected:
+                raise RuntimeError(f"Native Start DSpec.app build identity mismatch: {native_health}")
+            if native_health.get("host") != "127.0.0.1" or native_health.get("port") != 3210:
+                raise RuntimeError(f"Native Start DSpec.app health contract failed: {native_health}")
+            record(
+                results,
+                "native Start DSpec.app LaunchServices execution",
+                "PASS",
+                f"{time.monotonic() - native_start_started:.3f}s",
+                native_health,
+            )
+            record(
+                results,
+                "native launcher browser rendering",
+                "NOT TESTED",
+                "Start DSpec.app exercised the browser-enabled runner path, but hosted CI does not prove a visible browser window.",
+            )
+
+            if sentinel.poll() is not None:
+                raise RuntimeError("Unrelated sentinel process exited during native Start DSpec.app execution.")
+
+            native_stop_started = time.monotonic()
+            run([open_tool, "-W", str(apps / "Stop DSpec.app")], timeout=60)
+            wait_health(False, 30)
+            remaining = run(["lsof", "-ti", "tcp:3210"], check=False, timeout=20).stdout.strip()
+            if remaining:
+                raise RuntimeError(f"Port 3210 remains occupied after native Stop DSpec.app: {remaining}")
+            record(
+                results,
+                "native Stop DSpec.app LaunchServices execution",
+                "PASS",
+                f"{time.monotonic() - native_stop_started:.3f}s; port 3210 released",
+            )
+
+            if sentinel.poll() is not None:
+                raise RuntimeError("Stop DSpec.app terminated an unrelated sentinel process.")
+            record(results, "unrelated process preservation", "PASS", f"sentinel PID {sentinel.pid} remained alive")
+        finally:
+            run([str(dspec_bin), "stop"], timeout=30, check=False)
+            run([launchctl, "unsetenv", "DSPEC_DISABLE_TRAY"], check=False, timeout=20)
+            if sentinel.poll() is None:
+                sentinel.terminate()
+                try:
+                    sentinel.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    sentinel.kill()
+                    sentinel.wait(timeout=2)
+
         report = {
             "status": "PASS",
-            "validation_scope": "github_hosted_macos_arm64_installer_cli_persistence_keychain_contract",
+            "validation_scope": "github_hosted_macos_arm64_installer_cli_persistence_keychain_launchservices_contract",
             "expected_build": expected,
             "platform": platform.platform(),
             "machine": platform.machine(),
             "candidate_package_sha256": manifest["sha256"],
             "results": results,
             "evidence_boundary": (
-                "GitHub-hosted macOS evidence does not establish behavior on the user's target Mac, "
-                "native launcher GUI execution, menu-bar interaction, live LLM inference, deployment, "
-                "deployment verification, or KNOWN_GOOD status."
+                "GitHub-hosted macOS evidence establishes LaunchServices execution of Start/Stop .app launchers, "
+                "but does not establish visible browser rendering, behavior on the user's target Mac, menu-bar interaction, "
+                "live LLM inference, deployment, deployment verification, or KNOWN_GOOD status."
             ),
         }
         report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
