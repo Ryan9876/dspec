@@ -222,6 +222,10 @@ def _verify_and_apply_release() -> dict:
         if temp.exists():
             shutil.rmtree(temp)
         temp.mkdir(parents=True)
+        previous = runtime_dir() / "app.previous"
+        marker = _marker_path()
+        previous_marker = _previous_marker_path()
+        swapped = False
         try:
             _safe_extract(package, temp)
             _verify_package_identity(temp, data)
@@ -231,20 +235,17 @@ def _verify_and_apply_release() -> dict:
                 stamp = time.strftime("%Y%m%d-%H%M%S")
                 shutil.copy2(db_path(), runtime_dir() / f"dspec.db.backup-{stamp}")
 
-            previous = runtime_dir() / "app.previous"
             if previous.exists():
                 shutil.rmtree(previous)
-            if target.exists():
-                target.replace(previous)
-
-            marker = _marker_path()
-            previous_marker = _previous_marker_path()
             if previous_marker.exists():
                 previous_marker.unlink()
             if marker.exists():
                 shutil.copy2(marker, previous_marker)
 
+            if target.exists():
+                target.replace(previous)
             temp.replace(target)
+            swapped = True
             marker.write_text(
                 json.dumps(
                     {
@@ -262,6 +263,14 @@ def _verify_and_apply_release() -> dict:
         except Exception:
             if temp.exists():
                 shutil.rmtree(temp, ignore_errors=True)
+            if swapped and target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            if previous.exists() and not target.exists():
+                previous.replace(target)
+            if marker.exists():
+                marker.unlink()
+            if previous_marker.exists():
+                previous_marker.replace(marker)
             raise
 
         return {
