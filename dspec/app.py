@@ -185,7 +185,7 @@ async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     db.init_db()
-    discovery = await gateway.discover()
+    discovery = await gateway.discover(max_age_seconds=15.0)
     selected, selected_ready = reconcile_selected(gateway, discovery)
     return {
         "status": "healthy",
@@ -432,34 +432,104 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     existing = _ACTIVE_TASKS.get(req.session_id)
     if existing and not existing.done():
         raise HTTPException(409, {"error": "generation_already_running", "state_preserved": True})
+
     start_seq = _SEQ[req.session_id]
+    expected_context = db.review_context(session, req.stage)
 
     async def worker() -> None:
         try:
-            text, metrics, spec = await _generate(req)
-            chunk_size = 140
-            for offset in range(0, len(text), chunk_size):
-                _record_event(req.session_id, "token", {"text": text[offset:offset + chunk_size]})
-                await asyncio.sleep(0)
+            final: dict[str, Any] | None = None
+            async for item in engine.generate_stream(session, req.stage, req.instructions):
+                event = str(item.get("event") or "")
+                if event == "final":
+                    final = item
+                    continue
+                if event not in {"candidate_start", "token", "candidate_end"}:
+                    raise RuntimeError(f"Unexpected generation stream event: {event!r}")
+                payload = {key: value for key, value in item.items() if key != "event"}
+                _record_event(req.session_id, event, payload)
+
+            if final is None:
+                raise RuntimeError("Generation stream completed without an authoritative final result.")
+
+            content = str(final.get("content") or "").strip()
+            metrics = dict(final.get("metrics") or {})
+            review = dict(final.get("review") or {})
+            if not content:
+                raise RuntimeError("Generation stream returned an empty authoritative specification.")
+
+            spec = db.save_spec(
+                req.session_id,
+                req.stage,
+                content,
+                float(review.get("score", 0.0)),
+                review,
+                "draft",
+                expected_context=expected_context,
+            )
+
+            # Provisional candidates are never persisted. The selected event is
+            # emitted only after the authoritative Refine result has been saved
+            # against the unchanged project context.
+            _record_event(
+                req.session_id,
+                "candidate_selected",
+                {
+                    "content": content,
+                    "provisional": False,
+                    "quality_score": review.get("score"),
+                    "quality_passed": review.get("passed"),
+                },
+            )
             _record_event(req.session_id, "metrics", metrics)
-            review = spec.get("review", {})
             for check in review.get("checks", []):
-                _record_event(req.session_id, "assertion_check", {"assertion": check["id"], "passed": check["passed"]})
-            _record_event(req.session_id, "review_feedback", {"mustfix": review.get("must_fix", []), "recommendations": review.get("recommendations", [])})
-            _record_event(req.session_id, "complete", {"specType": req.stage, "revision": spec["revision_number"], "version": spec["version_number"]})
+                _record_event(
+                    req.session_id,
+                    "assertion_check",
+                    {"assertion": check["id"], "passed": check["passed"]},
+                )
+            _record_event(
+                req.session_id,
+                "review_feedback",
+                {
+                    "mustfix": review.get("must_fix", []),
+                    "recommendations": review.get("recommendations", []),
+                },
+            )
+            _record_event(
+                req.session_id,
+                "complete",
+                {
+                    "specType": req.stage,
+                    "revision": spec["revision_number"],
+                    "version": spec["version_number"],
+                },
+            )
         except Exception as exc:
-            _record_event(req.session_id, "error", {
-                "error": "generation_failed",
-                "message": str(exc) if isinstance(exc, db.StateConflict) else "Generation could not complete. Check the selected provider connection and credentials, then retry.",
-                "state_preserved": True,
-                "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"],
-            })
+            _record_event(
+                req.session_id,
+                "error",
+                {
+                    "error": "generation_failed",
+                    "message": (
+                        str(exc)
+                        if isinstance(exc, db.StateConflict)
+                        else "Generation could not complete. Check the selected provider connection and credentials, then retry."
+                    ),
+                    "state_preserved": True,
+                    "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"],
+                },
+            )
 
     _ACTIVE_TASKS[req.session_id] = asyncio.create_task(worker())
     return StreamingResponse(
         _events_since(req.session_id, start_seq),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-DSpec-Start-Seq": str(start_seq)},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-DSpec-Start-Seq": str(start_seq),
+        },
     )
 
 
