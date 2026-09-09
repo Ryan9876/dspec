@@ -32,6 +32,12 @@ def _read_fallback() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
+        # Never follow a credential-file symlink, and repair permissions before
+        # reading legacy fallback files created with broader access.
+        if path.is_symlink() or not path.is_file():
+            return {}
+        if stat.S_IMODE(path.stat().st_mode) != 0o600:
+            os.chmod(path, 0o600)
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}

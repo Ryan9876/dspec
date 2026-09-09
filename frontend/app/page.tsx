@@ -478,7 +478,10 @@ function ProviderModal({health,recovery,onClose,onChanged}:{health:Health|null;r
   const [model,setModel]=useState(health?.active_provider.model??"");
   const [key,setKey]=useState(""); const [err,setErr]=useState("");
   async function save(){
-    try{await api("/api/provider/select",{method:"POST",body:JSON.stringify({provider,model,api_key:key||null})});setKey("");await onChanged();}catch(e){setErr(String(e));}
+    setErr("");
+    try{await api("/api/provider/select",{method:"POST",body:JSON.stringify({provider,model,api_key:key||null})});await onChanged();}
+    catch(e){setErr(String(e));}
+    finally{setKey("");}
   }
   return <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
     <div className="panel w-full max-w-lg p-5 shadow-2xl">

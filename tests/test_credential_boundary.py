@@ -74,3 +74,25 @@ def test_fallback_replace_failure_preserves_prior_key_and_cleans_temp(client, mo
         security.store_api_key("openai", SECRET)
     assert security.config_path().read_bytes() == original
     assert list(security.config_path().parent.glob(".config-*.tmp")) == []
+
+
+def test_fallback_read_repairs_legacy_permissions_before_loading(client, monkeypatch):
+    monkeypatch.setattr(security.platform, "system", lambda: "Linux")
+    path = security.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"secrets":{"openai":"' + SECRET + '"}}', encoding="utf-8")
+    os.chmod(path, 0o644)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert security.load_api_key("openai") == SECRET
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_fallback_read_rejects_symlinked_credential_file(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(security.platform, "system", lambda: "Linux")
+    path = security.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "outside-config.json"
+    target.write_text('{"secrets":{"openai":"' + SECRET + '"}}', encoding="utf-8")
+    path.symlink_to(target)
+    assert security.load_api_key("openai") is None
+    assert stat.S_IMODE(target.stat().st_mode) != 0o600

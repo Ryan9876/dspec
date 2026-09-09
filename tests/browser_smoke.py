@@ -143,6 +143,13 @@ The application must preserve saved specification content across browser refresh
 
             page.get_by_role("button", name="LLM provider switcher").click()
             expect(page.get_by_text("LLM provider", exact=True)).to_be_visible()
+            page.get_by_label("Provider").select_option("openai")
+            key_input = page.locator('input[type="password"]')
+            expect(key_input).to_be_visible()
+            key_input.fill("short")
+            page.get_by_role("button", name="Apply provider").click()
+            expect(page.get_by_text("Provider settings could not be saved.", exact=False)).to_be_visible()
+            expect(key_input).to_have_value("")
             page.get_by_role("button", name="Cancel").click()
 
             page.get_by_role("button", name="Repository Audit").click()
