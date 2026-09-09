@@ -8,6 +8,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright, expect
 
@@ -56,8 +57,20 @@ def main() -> None:
             page.set_default_navigation_timeout(15_000)
             page_errors: list[str] = []
             console_errors: list[str] = []
+            external_requests: list[str] = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+            def record_request(request) -> None:
+                parsed = urlsplit(request.url)
+                if parsed.scheme in {"http", "https", "ws", "wss"} and parsed.hostname not in {
+                    "127.0.0.1",
+                    "localhost",
+                    "::1",
+                }:
+                    external_requests.append(request.url)
+
+            page.on("request", record_request)
 
             page.goto("http://127.0.0.1:3210", wait_until="domcontentloaded")
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible(timeout=10_000)
@@ -111,6 +124,9 @@ def main() -> None:
                 raise AssertionError(f"Browser page errors: {page_errors}")
             if console_errors:
                 raise AssertionError(f"Browser console errors: {console_errors}")
+            if external_requests:
+                raise AssertionError(f"Unexpected browser network egress: {external_requests}")
+            print("BROWSER_NETWORK_EGRESS", json.dumps({"unexpected_external_requests": external_requests}), flush=True)
             browser.close()
             browser = None
     except BaseException as exc:

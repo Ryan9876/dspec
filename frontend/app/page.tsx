@@ -4,7 +4,9 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import { Activity, Archive, Check, ChevronRight, CircleAlert, Clipboard, Cpu, FolderSearch, LoaderCircle, Plus, RefreshCw, Save, Settings2, ShieldCheck, Sparkles } from "lucide-react";
+import { loader } from "@monaco-editor/react";
 
+loader.config({ paths: { vs: "/monaco/vs" } });
 const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 
 type Stage = "constitution" | "requirements" | "solution" | "tasks";

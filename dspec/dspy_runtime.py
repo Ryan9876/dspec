@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-
 from .dspy_signatures import DSPY_AVAILABLE
+from .network_policy import local_endpoint
 from .security import load_api_key
 
 
@@ -13,7 +12,7 @@ def make_lm(provider: str, model: str):
     import dspy
 
     if provider == "lm_studio":
-        base = os.environ.get("DSPEC_LM_STUDIO_URL", "http://127.0.0.1:1234").rstrip("/") + "/v1"
+        base = local_endpoint("lm_studio") + "/v1"
         return dspy.LM(
             f"openai/{model}",
             api_base=base,
@@ -22,7 +21,7 @@ def make_lm(provider: str, model: str):
             max_tokens=24000,
         )
     if provider == "ollama":
-        base = os.environ.get("DSPEC_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+        base = local_endpoint("ollama")
         return dspy.LM(
             f"ollama_chat/{model}",
             api_base=base,

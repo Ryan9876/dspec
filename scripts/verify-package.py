@@ -19,6 +19,7 @@ REQUIRED_FILES = {
     "requirements.txt",
     "build-info.json",
     "frontend/out/index.html",
+    "frontend/out/monaco/vs/loader.js",
     "scripts/install-macos.sh",
     "scripts/start.sh",
     "scripts/stop.sh",
