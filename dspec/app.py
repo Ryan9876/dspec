@@ -24,7 +24,7 @@ from .provider import ProviderGateway, public_discovery
 from .provider_selection import reconcile_selected
 from .quality import evaluate
 from .logging_utils import configure_logging
-from .spec_engine import SpecEngine
+from .spec_engine import ProductIntentRequired, SpecEngine
 
 
 @asynccontextmanager
@@ -230,7 +230,7 @@ async def assist_questions(req: AssistRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     try:
         result = await engine.discover(session, req.stage)
-    except ValueError as exc:
+    except ProductIntentRequired as exc:
         raise HTTPException(
             422,
             {
@@ -399,6 +399,15 @@ def _approve_current(req: ApproveRequest, conn) -> dict[str, Any]:
 async def generate(req: GenerateRequest) -> dict[str, Any]:
     try:
         text, metrics, spec = await _generate(req)
+    except ProductIntentRequired as exc:
+        raise HTTPException(
+            422,
+            {
+                "error": "product_intent_required",
+                "message": str(exc),
+                "state_preserved": True,
+            },
+        ) from exc
     except db.StateConflict:
         raise
     except Exception as exc:
@@ -411,7 +420,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     session = _session_or_404(req.session_id)
     try:
         engine.validate_input(session, req.stage)
-    except ValueError as exc:
+    except ProductIntentRequired as exc:
         raise HTTPException(
             422,
             {
