@@ -79,6 +79,42 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  browser-latency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Python runtime
+        run: python -m pip install -e ".[dev]"
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Measure NFR-1.1 client interaction latency
+        env:
+          DSPEC_BROWSER_LATENCY_REPORT: evidence/browser-latency.json
+          DSPEC_PROVIDER_MODAL_SCREENSHOT: evidence/provider-modal.png
+        run: python tests/browser_latency.py
+      - name: Upload browser latency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspec-browser-latency-evidence
+          path: |
+            evidence/browser-latency.json
+            evidence/provider-modal.png
+          if-no-files-found: ignore
+          retention-days: 14
+
   optimizer-contract:
     runs-on: ubuntu-latest
     steps:
@@ -114,7 +150,7 @@ jobs:
           dspec-optimize validate --dataset /tmp/dspec-reviewed.jsonl --stage constitution
 
   package-build:
-    needs: [python, frontend, browser, optimizer-contract]
+    needs: [python, frontend, browser, browser-latency, optimizer-contract]
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
