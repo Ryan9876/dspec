@@ -229,7 +229,16 @@ async def provider_select(req: ProviderSelect) -> dict[str, Any]:
 async def assist_questions(req: AssistRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     try:
-        return await engine.discover(session, req.stage)
+        result = await engine.discover(session, req.stage)
+    except ValueError as exc:
+        raise HTTPException(
+            422,
+            {
+                "error": "product_intent_required",
+                "message": str(exc),
+                "state_preserved": True,
+            },
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             503,
@@ -239,6 +248,14 @@ async def assist_questions(req: AssistRequest) -> dict[str, Any]:
                 "state_preserved": True,
             },
         ) from exc
+    db.save_answer(
+        req.session_id,
+        req.stage,
+        f"discovery-context-{req.stage}",
+        None,
+        json.dumps(result, sort_keys=True, separators=(",", ":")),
+    )
+    return result
 
 
 @app.get("/api/sessions")
@@ -391,7 +408,18 @@ async def generate(req: GenerateRequest) -> dict[str, Any]:
 
 @app.post("/api/spec/stream")
 async def stream(req: GenerateRequest) -> StreamingResponse:
-    _session_or_404(req.session_id)
+    session = _session_or_404(req.session_id)
+    try:
+        engine.validate_input(session, req.stage)
+    except ValueError as exc:
+        raise HTTPException(
+            422,
+            {
+                "error": "product_intent_required",
+                "message": str(exc),
+                "state_preserved": True,
+            },
+        ) from exc
     existing = _ACTIVE_TASKS.get(req.session_id)
     if existing and not existing.done():
         raise HTTPException(409, {"error": "generation_already_running", "state_preserved": True})
