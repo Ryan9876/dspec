@@ -193,6 +193,7 @@ def main() -> None:
                     os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
                 ),
             },
+            cwd=install_root / "source",
             timeout=30,
         )
         runner_probe_data = json.loads(runner_probe.stdout)
