@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -522,3 +523,45 @@ def test_sanitizer_redacts_common_api_key_shapes():
         cleaned = sanitize(sample)
         assert "[REDACTED_API_KEY]" in cleaned
         assert "abcdefghijklmnopqrstuvwxyz123456" not in cleaned
+
+
+def test_constitution_generation_requires_saved_product_intent(client: TestClient):
+    sid = create_session(client, "missing-product-intent")
+    response = client.post("/api/spec/stream", json={"session_id": sid, "stage": "constitution"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "product_intent_required"
+
+
+def test_assist_persists_generated_question_context(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    sid = create_session(client, "discovery-context")
+    client.post("/api/answers", json={
+        "session_id": sid,
+        "stage": "constitution",
+        "question_id": "assistant-constitution",
+        "selected_option_id": "Local-first / private by default",
+        "free_text_payload": "Build a simple local inventory tracker.",
+    })
+
+    async def fake_discover(session, stage):
+        return {
+            "gaps_found": ["Backup behavior is not defined."],
+            "questions": [{
+                "id": "backup",
+                "question": "Should the user be able to export a backup?",
+                "why_it_matters": "It determines recovery behavior.",
+                "options": [
+                    {"id": "yes", "label": "Yes, manual export", "rationale": "Keeps recovery user-controlled."},
+                    {"id": "no", "label": "No export", "rationale": "Smallest feature surface."},
+                ],
+                "recommended_option_id": "yes",
+                "allow_free_text": True,
+            }],
+        }
+
+    monkeypatch.setattr(engine, "discover", fake_discover)
+    response = client.post("/api/assist/questions", json={"session_id": sid, "stage": "constitution"})
+    assert response.status_code == 200
+    session = client.get(f"/api/sessions/{sid}").json()
+    context = next(item for item in session["answers"] if item["question_id"] == "discovery-context-constitution")
+    payload = json.loads(context["free_text_payload"])
+    assert payload["questions"][0]["options"][0]["label"] == "Yes, manual export"
