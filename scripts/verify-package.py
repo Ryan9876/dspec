@@ -113,6 +113,8 @@ def inspect_package(dist: Path, expected_build: str) -> tuple[dict[str, Any], Pa
             raise RuntimeError(f"Forbidden runtime/source artifacts are packaged: {forbidden[:10]}")
 
         build_info = json.loads(zf.read("build-info.json"))
+        if build_info.get("source_repository") != "Ryan9876/dspec":
+            raise RuntimeError("Embedded build-info.json source repository identity is invalid.")
         if build_info.get("build_hash") != expected_build:
             raise RuntimeError("Embedded build-info.json does not match the expected source build.")
         if str(build_info.get("version") or "").strip().lstrip("v") != release_version:
