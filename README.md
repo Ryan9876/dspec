@@ -2,7 +2,7 @@
 
 DSpec AI is a local, spec-first workspace that turns product intent into a governed four-tier software specification and downstream coding-agent handoff.
 
-**Prototype:** 0.1.1 candidate  
+**Prototype:** 0.1.2 candidate  
 **Runtime:** `http://127.0.0.1:3210`  
 **Lifecycle:** explicit manual start/stop only  
 **Change:** `DS-CHG-001-dspec-ai-prototype`
@@ -15,6 +15,7 @@ DSpec AI is a local, spec-first workspace that turns product intent into a gover
 - Monaco specification editing with debounced local autosave plus explicit Save.
 - Formal DSPy signatures for all four tiers and contextual MCQ gap discovery.
 - `dspy.Refine` bounded self-correction using the deterministic DSpec quality metric and a 0.90 threshold.
+- Provider-backed provisional stage streaming during Refine; reasoning/feedback fields stay internal and only the final Refine-selected result is persisted.
 - Provider switcher for LM Studio, Ollama, OpenAI, and Anthropic without backend restart.
 - LM Studio and Ollama local model discovery.
 - Write-only cloud credential entry; macOS Keychain on Mac and `0600` protected fallback outside macOS.
@@ -71,7 +72,7 @@ It does **not** create a Login Item, LaunchAgent, or boot daemon.
 
 The macOS launcher is intended to be installed once. After that, a governed release can be applied by stopping DSpec and starting it again. `Start DSpec.app` checks the synced Google Drive `02 - Releases/current/manifest.json`, verifies that the manifest is `validated`, verifies the package SHA-256 and embedded build identity, updates the local runtime, and starts the new version. Candidate manifests are never auto-installed.
 
-Users who installed the earlier `0.1.0` prototype need one manual `0.1.1` bootstrap install because `0.1.0` predates the persistent updater. After the `0.1.1` bootstrap is installed, normal compatible releases do not require reinstalling the macOS launchers or bootstrap. A future release may explicitly require a newer bootstrap by increasing `minimum_runner_version`; in that exceptional case DSpec refuses the update instead of applying an incompatible release.
+Users who installed the earlier `0.1.0` prototype need one manual install of a stable-bootstrap candidate (`0.1.1` or later) because `0.1.0` predates the persistent updater. After a stable bootstrap is installed, normal compatible releases do not require reinstalling the macOS launchers or bootstrap. A future release may explicitly require a newer bootstrap by increasing `minimum_runner_version`; in that exceptional case DSpec refuses the update instead of applying an incompatible release.
 
 ## Providers
 
@@ -82,7 +83,7 @@ Local discovery probes:
 
 Cloud provider keys are entered only through the local provider modal. Keys are never returned in API responses.
 
-Generation is executed through DSPy under the currently selected provider. Changing provider/model changes subsequent DSPy calls without restarting DSpec.
+Generation is executed through DSPy under the currently selected provider. Changing provider/model changes subsequent DSPy calls without restarting DSpec. Stage generation uses the explicit DSPy Signature outputs with `dspy.Predict` inside `dspy.Refine`; provisional specification-field tokens stream while Refine is evaluating, but provisional candidates are never persisted or approved.
 
 ## DSPy optimization state
 
@@ -136,7 +137,7 @@ python scripts/build-package.py
 
 This creates:
 
-- `dist/DSpec-v0.1.1.zip`
+- `dist/DSpec-v0.1.2.zip`
 - `dist/candidate-manifest.json`
 
 The generated manifest is intentionally marked `"validation_state": "candidate"`. The local runner will not auto-install it from the Google Drive `current` release location until durable release governance explicitly promotes the exact package to `validated`. User-facing releases use semantic version numbers such as `0.1.1`; commit SHA, CI run, and package hash remain internal evidence.
