@@ -74,7 +74,7 @@ def main() -> None:
 
             page.goto("http://127.0.0.1:3210", wait_until="domcontentloaded")
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible(timeout=10_000)
-            expect(page.get_by_text("v0.1.1", exact=True)).to_be_visible(timeout=10_000)
+            expect(page.get_by_text("v0.1.2", exact=True)).to_be_visible(timeout=10_000)
             health_probe = page.evaluate("""async () => {
                 const response = await fetch('/api/health', {signal: AbortSignal.timeout(10000)});
                 return {status: response.status, text: await response.text()};
