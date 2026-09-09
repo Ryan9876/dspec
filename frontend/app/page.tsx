@@ -224,6 +224,20 @@ export default function Home(){
     catch(e){setError(String(e));}finally{setBusy(null);}
   }
 
+  async function applyReviewInstruction(instruction:string){
+    if(!session||!draft.trim()||!instruction.trim())return;
+    setBusy("Applying review fix"); setError(null);
+    try{
+      const r=await api<{content:string;review:Review;draft:{content:string;updated_at:string};formal_revision_created:boolean}>("/api/spec/revise",{
+        method:"POST",
+        body:JSON.stringify({session_id:session.id,stage,content:draft,instruction}),
+      });
+      setDraft(r.content);
+      setReview(r.review??{});
+      setSession({...session,drafts:{...(session.drafts??{}),[stage]:r.draft}});
+    }catch(e){setError(String(e));}finally{setBusy(null);}
+  }
+
   async function approve(){
     if(!session)return; setBusy("Approving");
     try{await api("/api/spec/approve",{method:"POST",body:JSON.stringify({session_id:session.id,stage})});await loadSession(session.id);}
@@ -325,7 +339,7 @@ export default function Home(){
 
             <div className="space-y-4">
               <AssistantCard stage={stage} session={session} onSave={saveAssistant}/>
-              <ReviewBoard review={review} status={current?.approval_status} dirty={draftDirty} busy={busy} onReview={reviewNow} onApprove={approve}/>
+              <ReviewBoard review={review} status={current?.approval_status} dirty={draftDirty} busy={busy} onReview={reviewNow} onApply={applyReviewInstruction} onApprove={approve}/>
               <section className="panel p-4">
                 <div className="mb-3 flex items-center gap-2 font-semibold"><Archive className="h-4 w-4 text-cyan-300"/>Handoff</div>
                 <p className="mb-3 text-xs leading-5 text-slate-500">Approved export includes all four tiers plus Claude, Cursor, Codex and ChatGPT agent instructions. Draft exports are explicitly labeled.</p>
@@ -408,15 +422,37 @@ function DynamicQuestion({question,saved,onSave}:{question:DiscoveryQuestion;sav
   </div>
 }
 
-function ReviewBoard({review,status,dirty,busy,onReview,onApprove}:{review:Review;status?:string;dirty:boolean;busy:string|null;onReview:()=>Promise<void>;onApprove:()=>Promise<void>}){
-  const score=review.score??0; const fixes=review.must_fix??[];
+function ReviewBoard({review,status,dirty,busy,onReview,onApply,onApprove}:{review:Review;status?:string;dirty:boolean;busy:string|null;onReview:()=>Promise<void>;onApply:(instruction:string)=>Promise<void>;onApprove:()=>Promise<void>}){
+  const score=review.score??0;
+  const fixes=review.must_fix??[];
+  const passing=review.passing??[];
+  const fixInstructions=new Set(fixes.map(x=>x.recommendation??x.detail));
+  const recommendations=(review.recommendations??[]).filter(x=>!fixInstructions.has(x));
   return <section className="panel p-4">
     <div className="mb-3 flex items-center justify-between"><div className="font-semibold">Review board</div><span className={`text-sm font-bold ${scoreTone(score)}`}>{Math.round(score*100)}%</span></div>
     {review.semantic_status&&<div className={`mb-3 rounded-lg px-2 py-1.5 text-xs ${review.semantic_status==="PASS"?"bg-emerald-500/10 text-emerald-300":review.semantic_status==="NOT TESTED"?"bg-amber-500/10 text-amber-200":"bg-rose-500/10 text-rose-200"}`}>Semantic review: {review.semantic_status}{review.semantic_error?` — ${review.semantic_error}`:""}</div>}
     <div className="mb-3 h-1.5 overflow-hidden rounded bg-slate-800"><div className={`h-full ${score>=.9?"bg-emerald-400":score>=.7?"bg-amber-400":"bg-rose-400"}`} style={{width:`${Math.round(score*100)}%`}}/></div>
     {status==="approved"&&!dirty&&<div className="mb-3 flex items-center gap-2 rounded-lg bg-emerald-500/10 p-2 text-xs text-emerald-300"><Check className="h-4 w-4"/>Approved revision</div>}
     {dirty&&<div className="mb-3 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">Draft buffer has changes newer than the formal revision. Review will save a new revision first.</div>}
-    {!!fixes.length?<div className="space-y-2">{fixes.slice(0,4).map(x=><div key={x.id} className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-2"><div className="text-xs font-semibold text-rose-200">{x.label}</div><div className="mt-1 text-[11px] leading-4 text-slate-500">{x.recommendation??x.detail}</div></div>)}</div>:<div className="mb-3 text-xs text-slate-500">{review.score!==undefined?"No deterministic must-fix items. Approval still represents explicit user/reviewer promotion.":"Run review after creating a draft."}</div>}
+
+    {!!passing.length&&<div className="mb-3">
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-emerald-300/80">Passing assertions</div>
+      <div className="space-y-1.5">{passing.slice(0,4).map(x=><div key={x.id} className="flex gap-2 rounded-lg border border-emerald-500/15 bg-emerald-500/5 p-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300"/><div><div className="text-xs font-medium text-emerald-200">{x.label}</div><div className="mt-0.5 text-[11px] leading-4 text-slate-500">{x.detail}</div></div></div>)}</div>
+    </div>}
+
+    {!!fixes.length?<div>
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-rose-300/80">Must fix</div>
+      <div className="space-y-2">{fixes.slice(0,4).map(x=>{
+        const instruction=x.recommendation??x.detail;
+        return <div key={x.id} className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-2"><div className="text-xs font-semibold text-rose-200">{x.label}</div><div className="mt-1 text-[11px] leading-4 text-slate-500">{instruction}</div><button className="btn mt-2 w-full !py-1.5 text-xs" disabled={!!busy||!instruction} onClick={()=>void onApply(instruction)}>Apply fix</button></div>;
+      })}</div>
+    </div>:<div className="mb-3 text-xs text-slate-500">{review.score!==undefined?"No deterministic must-fix items. Approval still represents explicit user/reviewer promotion.":"Run review after creating a draft."}</div>}
+
+    {!!recommendations.length&&<div className="mt-3">
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-cyan-300/80">Actionable recommendations</div>
+      <div className="space-y-2">{recommendations.slice(0,4).map((instruction,index)=><div key={`${index}-${instruction}`} className="rounded-lg border border-cyan-500/15 bg-cyan-500/5 p-2"><div className="text-[11px] leading-4 text-slate-400">{instruction}</div><button className="btn mt-2 w-full !py-1.5 text-xs" disabled={!!busy} onClick={()=>void onApply(instruction)}>Apply recommendation</button></div>)}</div>
+    </div>}
+
     <div className="mt-3 grid grid-cols-2 gap-2"><button className="btn" disabled={!!busy} onClick={()=>void onReview()}>Review</button><button className="btn btn-primary" disabled={!!busy||dirty||score<.9||review.passed!==true} onClick={()=>void onApprove()}>Approve</button></div>
   </section>
 }
