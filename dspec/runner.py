@@ -312,10 +312,19 @@ def _open_browser() -> None:
     subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def _root_identity(root: Path) -> dict:
+    return _load_json(root / "build-info.json")
+
+
 def _launch_backend(root: Path, open_browser: bool) -> dict:
     log = open(log_path(), "a", encoding="utf-8")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root) + os.pathsep + env.get("PYTHONPATH", "")
+    identity = _root_identity(root)
+    if str(identity.get("build_hash", "")).strip():
+        env["DSPEC_BUILD_HASH"] = str(identity["build_hash"]).strip()
+    if str(identity.get("version", "")).strip():
+        env["DSPEC_APP_VERSION"] = str(identity["version"]).strip().lstrip("v")
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "dspec.app:app", "--host", HOST, "--port", str(PORT)],
         cwd=root,
