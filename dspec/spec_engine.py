@@ -35,6 +35,10 @@ _SIGNATURES = {
 }
 
 
+class ProductIntentRequired(ValueError):
+    pass
+
+
 class SpecEngine:
     def __init__(self, gateway: ProviderGateway) -> None:
         self.gateway = gateway
@@ -121,7 +125,7 @@ class SpecEngine:
 
     def validate_input(self, session: dict[str, Any], stage: str) -> None:
         if stage == "constitution" and not self._project_intent(session):
-            raise ValueError("Describe what you want to build before analyzing gaps or generating the Constitution.")
+            raise ProductIntentRequired("Describe what you want to build before analyzing gaps or generating the Constitution.")
 
     def _inputs(self, session: dict[str, Any], stage: str, instructions: str | None) -> dict[str, str]:
         self.validate_input(session, stage)
