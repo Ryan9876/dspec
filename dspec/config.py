@@ -2,11 +2,33 @@ from __future__ import annotations
 
 import json
 import os
+from importlib import metadata
 from pathlib import Path
 
 HOST = "127.0.0.1"
 PORT = 3210
-APP_VERSION = "0.1.0"
+
+
+def resolve_app_version(root: Path | None = None) -> str:
+    override = os.environ.get("DSPEC_APP_VERSION")
+    if override:
+        return override.strip()
+    package_root = root or Path(__file__).resolve().parents[1]
+    info_path = package_root / "build-info.json"
+    try:
+        data = json.loads(info_path.read_text(encoding="utf-8"))
+        version = str(data.get("version", "")).strip().lstrip("v")
+        if version:
+            return version
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    try:
+        return metadata.version("dspec-ai")
+    except metadata.PackageNotFoundError:
+        return "0.0.0-dev"
+
+
+APP_VERSION = resolve_app_version()
 
 
 def resolve_build_hash(root: Path | None = None) -> str:
