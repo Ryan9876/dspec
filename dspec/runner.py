@@ -196,7 +196,12 @@ def _verify_and_apply_release() -> dict:
                 "runner_version": APP_VERSION,
             }
 
+        expected_package_name = f"DSpec-v{release_version}.zip"
         package_name = str(data.get("package_filename", "")).strip()
+        if package_name != expected_package_name:
+            raise RuntimeError(
+                f"Release package name {package_name!r} does not match governed version {release_version!r}"
+            )
         package = manifest_path.parent / package_name
         if not package.exists():
             return {
@@ -211,6 +216,18 @@ def _verify_and_apply_release() -> dict:
 
         target = runtime_dir() / "app"
         current = _load_json(_marker_path())
+        current_version = str(current.get("version", "")).strip().lstrip("v")
+        if current_version:
+            if _semver_tuple(release_version) < _semver_tuple(current_version):
+                return {
+                    "status": "release_older_than_current",
+                    "release_version": release_version,
+                    "current_version": current_version,
+                }
+            if release_version == current_version and current.get("sha256") != digest:
+                raise RuntimeError(
+                    "Release version matches the active version but package identity differs; refusing ambiguous replacement"
+                )
         if current.get("sha256") == digest and (target / "dspec" / "app.py").exists():
             return {
                 "status": "release_current",
