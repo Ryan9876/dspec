@@ -221,6 +221,35 @@ def test_stream_generation_preserves_contract(client: TestClient, monkeypatch: p
     assert session["specs"]["requirements"]["content"] == DRAFTS["requirements"]
 
 
+def test_stream_generation_failure_preserves_saved_state_and_offers_fallback(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    sid = create_session(client, "stream-failure")
+    draft = DRAFTS["constitution"]
+    assert client.post("/api/spec/draft", json={"session_id": sid, "stage": "constitution", "content": draft}).status_code == 200
+    assert client.post("/api/answers", json={
+        "session_id": sid,
+        "stage": "constitution",
+        "question_id": "assistant-constitution",
+        "selected_option_id": "Recommend a safe default",
+        "free_text_payload": "preserve this recovery context",
+    }).status_code == 200
+
+    async def failed_generate(session, stage, instructions=None):
+        raise RuntimeError("LM Studio unavailable")
+
+    monkeypatch.setattr(engine, "generate", failed_generate)
+    with client.stream("POST", "/api/spec/stream", json={"session_id": sid, "stage": "constitution"}) as r:
+        assert r.status_code == 200
+        text = "".join(r.iter_text())
+
+    assert "event: error" in text
+    assert '"state_preserved":true' in text
+    assert '"fallback_options":["lm_studio","ollama","openai","anthropic"]' in text
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["drafts"]["constitution"]["content"] == draft
+    answer = next(item for item in session["answers"] if item["question_id"] == "assistant-constitution")
+    assert answer["free_text_payload"] == "preserve this recovery context"
+
+
 def test_dspy_discovery_endpoint_returns_structured_mcq(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     sid = create_session(client, "assist-test")
 

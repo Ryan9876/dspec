@@ -98,6 +98,20 @@ def main() -> None:
                 print("BROWSER_SESSIONS_PROBE", json.dumps(sessions_probe), flush=True)
                 raise
 
+            page.route("**/api/spec/stream", lambda route: route.fulfill(
+                status=200,
+                content_type="text/event-stream",
+                headers={"X-DSpec-Start-Seq": "0"},
+                body='id: 1\nevent: error\ndata: {"seq":1,"error":"generation_failed","message":"LM Studio unavailable","state_preserved":true,"fallback_options":["lm_studio","ollama","openai","anthropic"]}\n\n',
+            ))
+            page.get_by_role("button", name="Generate").click()
+            expect(page.get_by_text("Generation interrupted", exact=True)).to_be_visible()
+            expect(page.get_by_text("Saved project state is preserved.", exact=False)).to_be_visible()
+            expect(page.get_by_text("Ollama · offline", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Cancel").click()
+            expect(page.get_by_role("button", name="Switch provider")).to_be_visible()
+            page.unroute("**/api/spec/stream")
+
             page.get_by_role("button", name="Requirements").click()
             expect(page.get_by_text("Requirements draft", exact=True)).to_be_visible()
 

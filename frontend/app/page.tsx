@@ -41,6 +41,11 @@ type Health = {
   cloud_provider_readiness?: Record<string,boolean>;
   dspy?: {available:boolean;optimization:string;mipro_v2:string};
 };
+type RecoveryPrompt = {
+  message: string;
+  statePreserved: boolean;
+  fallbackOptions: string[];
+};
 
 const STAGES: Stage[] = ["constitution","requirements","solution","tasks"];
 const LABELS: Record<Stage,string> = {
@@ -79,6 +84,7 @@ export default function Home(){
   const {session,stage,health,busy,setSession,setStage,setHealth,setBusy}=useWorkflow();
   const [sessions,setSessions]=useState<Array<{id:string;bundle_name:string}>>([]);
   const [providerOpen,setProviderOpen]=useState(false);
+  const [recovery,setRecovery]=useState<RecoveryPrompt|null>(null);
   const [auditOpen,setAuditOpen]=useState(false);
   const [error,setError]=useState<string|null>(null);
   const [draft,setDraft]=useState("");
@@ -162,7 +168,7 @@ export default function Home(){
 
   async function generate(){
     if(!session)return;
-    setBusy("Generating"); setError(null); setStreamText("");
+    setBusy("Generating"); setError(null); setRecovery(null); setStreamText("");
     let output=""; let lastSeq=0; let attempt=0; let initial=true; let terminal=false; let providerFailure=false;
     const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
     try{
@@ -191,6 +197,16 @@ export default function Home(){
               if(event==="complete"){terminal=true;break;}
               if(event==="error"){
                 providerFailure=true;terminal=true;
+                const fallbacks=Array.isArray(data.fallback_options)
+                  ? Array.from(new Set(data.fallback_options.filter((item:unknown)=>typeof item==="string"&&item!==health?.active_provider.provider))) as string[]
+                  : [];
+                setRecovery({
+                  message:data.message||"The selected provider became unavailable during generation.",
+                  statePreserved:data.state_preserved===true,
+                  fallbackOptions:fallbacks,
+                });
+                try{setHealth(await api<Health>("/api/health"));}catch{}
+                setProviderOpen(true);
                 throw new Error(data.message||"Generation failed; saved input state was preserved.");
               }
             }
@@ -309,6 +325,7 @@ export default function Home(){
 
       <section className="min-w-0">
         {error&&<div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1 break-words">{error}</div><button onClick={()=>setError(null)}>×</button></div>}
+        {recovery&&!providerOpen&&<div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1"><div className="font-semibold">Generation interrupted</div><div className="mt-1 text-xs leading-5 text-amber-100/75">{recovery.statePreserved?"Saved project state is preserved. ":""}Choose a healthy local provider or configure/select a cloud fallback, then generate again.</div></div><button className="btn" onClick={()=>setProviderOpen(true)}>Switch provider</button></div>}
         {auditOpen?<AuditPanel/>:<>
           <div className="panel mb-4 flex items-center gap-1 p-2">
             {STAGES.map((s,i)=>{
@@ -359,7 +376,7 @@ export default function Home(){
       </section>
     </div>
 
-    {providerOpen&&<ProviderModal health={health} onClose={()=>setProviderOpen(false)} onChanged={async()=>{await refreshHealth();setProviderOpen(false)}}/>}
+    {providerOpen&&<ProviderModal health={health} recovery={recovery} onClose={()=>setProviderOpen(false)} onChanged={async()=>{await refreshHealth();setRecovery(null);setProviderOpen(false)}}/>}
     {busy&&<div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm shadow-2xl"><LoaderCircle className="h-4 w-4 animate-spin text-cyan-300"/>{busy}</div>}
   </main>
 }
@@ -456,7 +473,7 @@ function ReviewBoard({review,status,dirty,busy,onReview,onApply,onApprove}:{revi
   </section>
 }
 
-function ProviderModal({health,onClose,onChanged}:{health:Health|null;onClose:()=>void;onChanged:()=>Promise<void>}){
+function ProviderModal({health,recovery,onClose,onChanged}:{health:Health|null;recovery:RecoveryPrompt|null;onClose:()=>void;onChanged:()=>Promise<void>}){
   const [provider,setProvider]=useState(health?.active_provider.provider??"lm_studio");
   const [model,setModel]=useState(health?.active_provider.model??"");
   const [key,setKey]=useState(""); const [err,setErr]=useState("");
@@ -466,6 +483,7 @@ function ProviderModal({health,onClose,onChanged}:{health:Health|null;onClose:()
   return <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
     <div className="panel w-full max-w-lg p-5 shadow-2xl">
       <div className="mb-4"><div className="text-lg font-semibold">LLM provider</div><div className="text-xs text-slate-500">Changes apply to subsequent generation calls without restarting DSpec.</div></div>
+      {recovery&&<div className="mb-4 rounded-lg border border-amber-500/25 bg-amber-500/8 p-3 text-xs text-amber-100"><div className="font-semibold">Generation interrupted</div><div className="mt-1 leading-5 text-amber-100/75">{recovery.message}</div><div className="mt-1 leading-5">{recovery.statePreserved?"Saved project state is preserved. ":""}Choose a healthy local provider or configure/select a cloud fallback.</div>{!!recovery.fallbackOptions.length&&<div className="mt-2 flex flex-wrap gap-1.5">{recovery.fallbackOptions.map(item=><span key={item} className="rounded bg-slate-950/50 px-2 py-1">{item==="lm_studio"?"LM Studio":item==="ollama"?"Ollama":item==="openai"?"OpenAI":"Anthropic"} · {(item==="lm_studio"||item==="ollama")?(health?.detected_local_services?.[item]?.online?"ready":"offline"):(health?.cloud_provider_readiness?.[item]?"configured":"needs key")}</span>)}</div>}</div>}
       <label className="mb-3 block text-xs text-slate-400">Provider<select className="input mt-1" value={provider} onChange={e=>setProvider(e.target.value)}><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
       <label className="mb-3 block text-xs text-slate-400">Model{(["lm_studio","ollama"].includes(provider)&&(health?.detected_local_services?.[provider]?.models?.length??0)>0)?<select className="input mt-1" value={model} onChange={e=>setModel(e.target.value)}>{health?.detected_local_services?.[provider]?.models.map(m=><option key={m} value={m}>{m}</option>)}</select>:<input className="input mt-1" value={model} onChange={e=>setModel(e.target.value)} placeholder="model identifier"/>}</label>
       {(provider==="openai"||provider==="anthropic")&&<label className="block text-xs text-slate-400">API key <span className="text-slate-600">(write-only)</span><input className="input mt-1" type="password" value={key} onChange={e=>setKey(e.target.value)} autoComplete="off" placeholder="Leave blank to keep existing key"/></label>}
