@@ -71,7 +71,7 @@ make_app() {
 
 make_app "Start DSpec" "do shell script quoted form of POSIX path of \"$BIN/dspec\" & \" start\""
 make_app "Stop DSpec" "do shell script quoted form of POSIX path of \"$BIN/dspec\" & \" stop\""
-make_app "DSpec Status" "set resultText to do shell script quoted form of POSIX path of \"$BIN/dspec\" & \" status\""$'\n'"display dialog resultText with title \"DSpec Status\" buttons {\"OK\"} default button \"OK\""
+make_app "DSpec Status" "set resultText to do shell script quoted form of POSIX path of \"$BIN/dspec\" & \" status --human\""$'\n'"display dialog resultText with title \"DSpec Status\" buttons {\"OK\"} default button \"OK\""
 
 echo "Installed DSpec under $INSTALL"
 echo "Launchers created in $APPS:"
