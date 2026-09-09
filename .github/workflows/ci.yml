@@ -186,7 +186,7 @@ jobs:
         with:
           name: dspec-package-preflight-${{ github.sha }}
           path: |
-            dist/dspec-build-v0.1.0.zip
+            dist/DSpec-v*.zip
             dist/candidate-manifest.json
             dist/package-verification.json
           if-no-files-found: error
@@ -249,7 +249,7 @@ jobs:
         with:
           name: dspec-candidate-${{ github.sha }}
           path: |
-            dist/dspec-build-v0.1.0.zip
+            dist/DSpec-v*.zip
             dist/candidate-manifest.json
             dist/package-verification.json
           if-no-files-found: error
