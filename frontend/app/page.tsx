@@ -426,8 +426,7 @@ function ReviewBoard({review,status,dirty,busy,onReview,onApply,onApprove}:{revi
   const score=review.score??0;
   const fixes=review.must_fix??[];
   const passing=review.passing??[];
-  const fixInstructions=new Set(fixes.map(x=>x.recommendation??x.detail));
-  const recommendations=(review.recommendations??[]).filter(x=>!fixInstructions.has(x));
+  const recommendations=review.recommendations??[];
   return <section className="panel p-4">
     <div className="mb-3 flex items-center justify-between"><div className="font-semibold">Review board</div><span className={`text-sm font-bold ${scoreTone(score)}`}>{Math.round(score*100)}%</span></div>
     {review.semantic_status&&<div className={`mb-3 rounded-lg px-2 py-1.5 text-xs ${review.semantic_status==="PASS"?"bg-emerald-500/10 text-emerald-300":review.semantic_status==="NOT TESTED"?"bg-amber-500/10 text-amber-200":"bg-rose-500/10 text-rose-200"}`}>Semantic review: {review.semantic_status}{review.semantic_error?` — ${review.semantic_error}`:""}</div>}
