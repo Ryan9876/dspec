@@ -2,7 +2,7 @@
 
 DSpec AI is a local, spec-first workspace that turns product intent into a governed four-tier software specification and downstream coding-agent handoff.
 
-**Prototype:** 0.1.0 candidate  
+**Prototype:** 0.1.1 candidate  
 **Runtime:** `http://127.0.0.1:3210`  
 **Lifecycle:** explicit manual start/stop only  
 **Change:** `DS-CHG-001-dspec-ai-prototype`
@@ -69,6 +69,8 @@ The installer places DSpec under `~/.dspec/source`, creates a private Python vir
 
 It does **not** create a Login Item, LaunchAgent, or boot daemon.
 
+The macOS launcher is intended to be installed once. After that, a governed release can be applied by stopping DSpec and starting it again. `Start DSpec.app` checks the synced Google Drive `02 - Releases/current/manifest.json`, verifies that the manifest is `validated`, verifies the package SHA-256 and embedded build identity, updates the local runtime, and starts the new version. Candidate manifests are never auto-installed.
+
 ## Providers
 
 Local discovery probes:
@@ -132,10 +134,10 @@ python scripts/build-package.py
 
 This creates:
 
-- `dist/dspec-build-v0.1.0.zip`
+- `dist/DSpec-v0.1.1.zip`
 - `dist/candidate-manifest.json`
 
-The generated manifest is intentionally marked `"validation_state": "candidate"`. The local runner will not auto-install it from the Google Drive `current` release location until durable release governance explicitly promotes the exact package to `validated`.
+The generated manifest is intentionally marked `"validation_state": "candidate"`. The local runner will not auto-install it from the Google Drive `current` release location until durable release governance explicitly promotes the exact package to `validated`. User-facing releases use semantic version numbers such as `0.1.1`; commit SHA, CI run, and package hash remain internal evidence.
 
 ## Validation
 
