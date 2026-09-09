@@ -15,6 +15,13 @@ APPS="$HOME/Applications"
 
 mkdir -p "$HOME_ROOT" "$BIN" "$APPS"
 
+# A manual install establishes a fresh bootstrap application while preserving
+# user data under ~/.dspec/runtime (database, logs, backups). Any previously
+# auto-updated application tree is discarded so the package being installed
+# becomes the active baseline immediately.
+rm -rf "$HOME_ROOT/runtime/app" "$HOME_ROOT/runtime/app.next" "$HOME_ROOT/runtime/app.previous"
+rm -f "$HOME_ROOT/runtime/active-release.json" "$HOME_ROOT/runtime/active-release.previous.json"
+
 if [[ ! -f "$ROOT/frontend/out/index.html" ]]; then
   if ! command -v npm >/dev/null 2>&1; then
     echo "frontend/out is missing and Node/npm is unavailable. Build the release package first." >&2
@@ -39,7 +46,15 @@ python3 -m venv "$VENV"
 
 cat > "$BIN/dspec" <<'SH'
 #!/bin/sh
-export DSPEC_APP_ROOT="$HOME/.dspec/source"
+set -eu
+BOOTSTRAP="$HOME/.dspec/source"
+ACTIVE="$HOME/.dspec/runtime/app"
+if [ -f "$ACTIVE/dspec/runner.py" ]; then
+  ROOT="$ACTIVE"
+else
+  ROOT="$BOOTSTRAP"
+fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec "$HOME/.dspec/venv/bin/python" -m dspec.runner "$@"
 SH
 chmod 700 "$BIN/dspec"
@@ -62,3 +77,4 @@ echo "  Start DSpec.app"
 echo "  Stop DSpec.app"
 echo "  DSpec Status.app"
 echo "No Login Item, LaunchAgent, or boot daemon was created."
+echo "Future validated releases can be applied by Stop DSpec.app followed by Start DSpec.app."
