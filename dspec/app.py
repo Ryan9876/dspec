@@ -37,6 +37,13 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost
 gateway = ProviderGateway()
 engine = SpecEngine(gateway)
 
+
+@app.exception_handler(db.StateConflict)
+async def state_conflict(_: Request, exc: db.StateConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": {
+        "error": "project_state_changed", "message": str(exc), "state_preserved": True,
+    }})
+
 _BUFFERS: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=2000))
 _SEQ: dict[str, int] = defaultdict(int)
 _ACTIVE_TASKS: dict[str, asyncio.Task[None]] = {}
@@ -159,7 +166,7 @@ async def _events_since(session_id: str, last_seq: int) -> AsyncIterator[str]:
 async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str, Any]]:
     session = _session_or_404(req.session_id)
     content, metrics, review = await engine.generate(session, req.stage, req.instructions)
-    spec = db.save_spec(req.session_id, req.stage, content, review["score"], review, "draft")
+    spec = db.save_spec(req.session_id, req.stage, content, review["score"], review, "draft", expected_context=db.review_context(session, req.stage))
     return content, metrics, spec
 
 
@@ -264,6 +271,10 @@ def spec_save(req: SpecSave) -> dict[str, Any]:
 async def spec_review(req: ReviewRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     spec = _latest_spec(session, req.stage)
+    pending = db.pending_drafts(session, req.stage)
+    if pending:
+        raise HTTPException(409, {"error": "unsaved_draft_changes", "message": "Save changed drafts before review: " + ", ".join(pending)})
+    context = db.review_context(session, req.stage)
     try:
         review = await engine.semantic_review(session, req.stage, spec["content"])
     except Exception as exc:
@@ -280,7 +291,12 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
             "semantic_status": "NOT TESTED",
             "semantic_error": str(exc)[:240],
         }
-    db.update_spec_review(spec["id"], review["score"], review)
+    review["context_sha256"] = context
+    with db.tx() as conn:
+        db.require_context(conn, req.session_id, req.stage, context)
+        # Every new review requires explicit approval; a failed review must never
+        # leave a previously approved revision exportable.
+        db.update_spec_review(spec["id"], review["score"], review, "draft", connection=conn)
     return review
 
 
@@ -303,23 +319,31 @@ async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
                 "state_preserved": True,
             },
         ) from exc
-    draft = db.save_draft_buffer(req.session_id, req.stage, content)
+    draft = db.save_draft_buffer(req.session_id, req.stage, content, expected_context=db.review_context(session, req.stage))
     return {
         "content": content,
         "review": review,
         "metrics": metrics,
         "draft": draft,
+        "session": db.get_session(req.session_id),
         "formal_revision_created": False,
     }
 
 
 @app.post("/api/spec/approve")
 def spec_approve(req: ApproveRequest) -> dict[str, Any]:
-    session = _session_or_404(req.session_id)
+    _session_or_404(req.session_id)
+    # Review validation and approval must observe the same database snapshot.
+    with db.tx() as conn:
+        return _approve_current(req, conn)
+
+
+def _approve_current(req: ApproveRequest, conn) -> dict[str, Any]:
+    session = db.get_session(req.session_id, conn)
     spec = _latest_spec(session, req.stage)
     structural = evaluate(req.stage, spec["content"])
     prior_review = spec.get("review") or {}
-    semantic_ok = prior_review.get("semantic_status") == "PASS" and prior_review.get("passed") is True
+    semantic_ok = db.review_is_current(session, req.stage)
     if not structural["passed"] or not semantic_ok:
         combined = prior_review if prior_review else {
             "structural": structural,
@@ -328,7 +352,6 @@ def spec_approve(req: ApproveRequest) -> dict[str, Any]:
             "passed": False,
             "semantic_status": "NOT TESTED",
         }
-        db.update_spec_review(spec["id"], float(combined.get("score", structural["score"])), combined, "draft")
         raise HTTPException(
             409,
             {
@@ -337,7 +360,7 @@ def spec_approve(req: ApproveRequest) -> dict[str, Any]:
             },
         )
     score = float(prior_review.get("score", structural["score"]))
-    db.update_spec_review(spec["id"], score, prior_review, "approved")
+    db.update_spec_review(spec["id"], score, prior_review, "approved", connection=conn)
     return {"approved": True, "stage": req.stage, "quality_score": score, "review": prior_review}
 
 
@@ -345,6 +368,8 @@ def spec_approve(req: ApproveRequest) -> dict[str, Any]:
 async def generate(req: GenerateRequest) -> dict[str, Any]:
     try:
         text, metrics, spec = await _generate(req)
+    except db.StateConflict:
+        raise
     except Exception as exc:
         raise HTTPException(503, {"error": "generation_failed", "message": str(exc), "state_preserved": True, "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"]}) from exc
     return {"content": text, "metrics": metrics, "spec": spec}

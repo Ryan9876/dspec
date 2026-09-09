@@ -70,12 +70,16 @@ jobs:
         env:
           DSPEC_BROWSER_SCREENSHOT: evidence/browser-smoke.png
         run: python tests/browser_smoke.py
+      - name: Browser review integrity with deterministic DSPy model
+        run: python tests/browser_review_integrity.py
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dspec-browser-evidence
-          path: evidence/browser-smoke.png
+          path: |
+            evidence/browser-smoke.png
+            evidence/review-integrity.png
           if-no-files-found: ignore
           retention-days: 14
 

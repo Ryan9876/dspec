@@ -9,6 +9,7 @@ from .dspy_signatures import (
     DiscoverSpecGaps,
     DSPY_AVAILABLE,
     IdeaToConstitution,
+    ReviseSpec,
     ScopeToRequirements,
     SemanticSpecReview,
     SpecToTasks,
@@ -240,6 +241,10 @@ class SpecEngine:
                 stage=stage,
                 prior_tiers=self._prior(session, stage),
                 spec_markdown=content,
+                discovery_answers="\n\n".join(
+                    f"{current}:\n{self._answers(session, current)}"
+                    for current in db.STAGES[:db.STAGES.index(stage) + 1]
+                ),
             )
         semantic = getattr(result, "review", None)
         if hasattr(semantic, "model_dump"):
@@ -250,6 +255,7 @@ class SpecEngine:
             raise RuntimeError("DSPy returned an invalid semantic review result.")
         semantic_score = float(semantic_data.get("score", 0.0))
         semantic_must_fix = semantic_data.get("must_fix") or []
+        consistency_issues = semantic_data.get("consistency_issues") or []
         combined = round(min(float(structural["score"]), semantic_score), 3)
         must_fix = list(structural.get("must_fix", []))
         must_fix.extend(
@@ -263,6 +269,17 @@ class SpecEngine:
             }
             for index, item in enumerate(semantic_must_fix)
         )
+        must_fix.extend(
+            {
+                "id": f"consistency_{index + 1}",
+                "label": "Cross-tier consistency",
+                "passed": False,
+                "weight": 0.0,
+                "detail": str(item),
+                "recommendation": str(item),
+            }
+            for index, item in enumerate(consistency_issues)
+        )
         recommendations = list(structural.get("recommendations", [])) + [
             str(item) for item in (semantic_data.get("recommendations") or [])
         ]
@@ -271,11 +288,11 @@ class SpecEngine:
             "semantic": semantic_data,
             "score": combined,
             "threshold": 0.90,
-            "passed": bool(structural["passed"] and semantic_score >= 0.90 and not semantic_must_fix),
+            "passed": bool(structural["passed"] and semantic_score >= 0.90 and not must_fix),
             "passing": structural.get("passing", []),
             "must_fix": must_fix,
             "recommendations": recommendations,
-            "semantic_status": "PASS" if semantic_score >= 0.90 and not semantic_must_fix else "FAIL",
+            "semantic_status": "PASS" if semantic_score >= 0.90 and not semantic_must_fix and not consistency_issues else "FAIL",
             "provider": {"provider": selected["provider"], "model": selected["model"]},
         }
 

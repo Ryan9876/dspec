@@ -71,6 +71,7 @@ try:
         stage: str = dspy.InputField(desc="Active DSpec tier.")
         prior_tiers: str = dspy.InputField(desc="Higher-authority prior tiers for consistency checking.")
         spec_markdown: str = dspy.InputField(desc="Specification draft under review.")
+        discovery_answers: str = dspy.InputField(desc="Saved user decisions for this tier and prior tiers; flag contradictions with these decisions.")
         review: SemanticReviewResult = dspy.OutputField(desc="Independent semantic review result.")
 
     class ReviseSpec(dspy.Signature):

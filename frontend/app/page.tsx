@@ -244,13 +244,13 @@ export default function Home(){
     if(!session||!draft.trim()||!instruction.trim())return;
     setBusy("Applying review fix"); setError(null);
     try{
-      const r=await api<{content:string;review:Review;draft:{content:string;updated_at:string};formal_revision_created:boolean}>("/api/spec/revise",{
+      const r=await api<{content:string;review:Review;draft:{content:string;updated_at:string};session?:Session;formal_revision_created:boolean}>("/api/spec/revise",{
         method:"POST",
         body:JSON.stringify({session_id:session.id,stage,content:draft,instruction}),
       });
       setDraft(r.content);
       setReview(r.review??{});
-      setSession({...session,drafts:{...(session.drafts??{}),[stage]:r.draft}});
+      setSession(r.session??{...session,drafts:{...(session.drafts??{}),[stage]:r.draft}});
     }catch(e){setError(String(e));}finally{setBusy(null);}
   }
 
