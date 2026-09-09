@@ -52,7 +52,8 @@ cat > "$BIN/dspec" <<'SH'
 #!/bin/sh
 set -eu
 BOOTSTRAP="$HOME/.dspec/source"
-ACTIVE="$HOME/.dspec/runtime/app"
+RUNTIME_HOME="${DSPEC_HOME:-$HOME/.dspec}"
+ACTIVE="$RUNTIME_HOME/runtime/app"
 if [ -f "$ACTIVE/dspec/runner.py" ]; then
   ROOT="$ACTIVE"
 else
