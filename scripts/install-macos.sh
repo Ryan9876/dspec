@@ -51,16 +51,12 @@ python3 -m venv "$VENV"
 cat > "$BIN/dspec" <<'SH'
 #!/bin/sh
 set -eu
+# The bootstrap runner is intentionally stable. It owns update verification and
+# process lifecycle, while the application runtime under ~/.dspec/runtime/app
+# can change independently after a validated release is applied.
 BOOTSTRAP="$HOME/.dspec/source"
-RUNTIME_HOME="${DSPEC_HOME:-$HOME/.dspec}"
-ACTIVE="$RUNTIME_HOME/runtime/app"
-if [ -f "$ACTIVE/dspec/runner.py" ]; then
-  ROOT="$ACTIVE"
-else
-  ROOT="$BOOTSTRAP"
-fi
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-cd "$ROOT"
+cd "$BOOTSTRAP"
+export PYTHONPATH="$BOOTSTRAP${PYTHONPATH:+:$PYTHONPATH}"
 exec "$HOME/.dspec/venv/bin/python" -m dspec.runner "$@"
 SH
 chmod 700 "$BIN/dspec"
