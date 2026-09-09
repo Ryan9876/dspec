@@ -75,7 +75,15 @@ def inspect_package(dist: Path, expected_build: str) -> tuple[dict[str, Any], Pa
             f"Manifest build hash {manifest.get('build_hash')!r} does not match expected {expected_build!r}."
         )
 
+    release_version = str(manifest.get("release_version") or "").strip().lstrip("v")
+    if not release_version:
+        raise RuntimeError("Candidate release_version is missing.")
+    expected_package_name = f"DSpec-v{release_version}.zip"
     package_name = str(manifest.get("package_filename") or "")
+    if package_name != expected_package_name:
+        raise RuntimeError(
+            f"Candidate package name {package_name!r} must be {expected_package_name!r}."
+        )
     package = dist / package_name
     if not package.is_file():
         raise RuntimeError(f"Candidate package is missing: {package_name!r}.")
@@ -107,6 +115,8 @@ def inspect_package(dist: Path, expected_build: str) -> tuple[dict[str, Any], Pa
         build_info = json.loads(zf.read("build-info.json"))
         if build_info.get("build_hash") != expected_build:
             raise RuntimeError("Embedded build-info.json does not match the expected source build.")
+        if str(build_info.get("version") or "").strip().lstrip("v") != release_version:
+            raise RuntimeError("Embedded build-info.json version does not match candidate release_version.")
 
     return manifest, package
 
