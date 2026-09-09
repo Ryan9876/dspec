@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from . import db
+from .network_policy import local_endpoint
 from .security import load_api_key, store_api_key
 
 PROVIDERS = ("lm_studio", "ollama", "openai", "anthropic")
@@ -64,8 +65,9 @@ class ProviderGateway:
         self._discovery_cache = None
 
     async def _probe_lm_studio(self) -> ProviderInfo:
-        endpoint = os.environ.get("DSPEC_LM_STUDIO_URL", "http://127.0.0.1:1234")
+        endpoint: str | None = None
         try:
+            endpoint = local_endpoint("lm_studio")
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 r = await client.get(endpoint + "/v1/models")
                 r.raise_for_status()
@@ -75,8 +77,9 @@ class ProviderGateway:
             return ProviderInfo("lm_studio", False, [], True, endpoint, str(exc)[:160])
 
     async def _probe_ollama(self) -> ProviderInfo:
-        endpoint = os.environ.get("DSPEC_OLLAMA_URL", "http://127.0.0.1:11434")
+        endpoint: str | None = None
         try:
+            endpoint = local_endpoint("ollama")
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 r = await client.get(endpoint + "/api/tags")
                 r.raise_for_status()
@@ -109,14 +112,14 @@ class ProviderGateway:
             return text, {"provider": "fixture", "model": "fixture", "latency_ms": 1}
         start = time.perf_counter()
         if provider == "lm_studio":
-            base = os.environ.get("DSPEC_LM_STUDIO_URL", "http://127.0.0.1:1234")
+            base = local_endpoint("lm_studio")
             payload = {"model": model, "messages": messages, "stream": False, "temperature": 0.2}
             async with httpx.AsyncClient(timeout=90.0) as client:
                 r = await client.post(base + "/v1/chat/completions", json=payload)
                 r.raise_for_status()
                 text = r.json()["choices"][0]["message"]["content"]
         elif provider == "ollama":
-            base = os.environ.get("DSPEC_OLLAMA_URL", "http://127.0.0.1:11434")
+            base = local_endpoint("ollama")
             payload = {"model": model, "messages": messages, "stream": False, "options": {"temperature": 0.2}}
             async with httpx.AsyncClient(timeout=90.0) as client:
                 r = await client.post(base + "/api/chat", json=payload)
