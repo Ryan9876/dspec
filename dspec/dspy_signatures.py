@@ -37,7 +37,7 @@ try:
         consistency_issues: list[str]
 
     class IdeaToConstitution(dspy.Signature):
-        """Create concrete, commercial-ready project governance. Resolve ambiguity without inventing validation evidence. Define stack boundaries, security/privacy rules, runtime and deployment constraints, compatibility expectations, quality gates, and explicit unknowns."""
+        """Create a concrete project constitution from the actual product intent and saved user decisions. Keep governance proportional to the described product. Do not invent corporate boards, shareholders, public APIs, multi-user authorization, compliance regimes, cloud hosting, or solution-level schemas unless the supplied product intent requires them. Define constitution-level purpose, non-negotiable operating/security/privacy boundaries, runtime/deployment constraints, compatibility expectations, quality gates, and explicit unknowns without inventing validation evidence."""
         raw_idea_description: str = dspy.InputField(desc="Product intent, saved discovery answers, and additional product-level direction.")
         security_isolation_preferences: str = dspy.InputField(desc="Privacy, credential, authorization, hosting, runtime, telemetry, and reversibility constraints.")
         constitution_spec: str = dspy.OutputField(desc="Complete Markdown constitution with explicit non-negotiable rules and measurable quality gates.")
@@ -84,7 +84,7 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of the revised tier.")
 
     class DiscoverSpecGaps(dspy.Signature):
-        """Analyze current product input for the active DSpec stage. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity. Prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve a free-text option. Do not ask implementation trivia that can safely be inferred."""
+        """Analyze the actual saved product input for the active DSpec stage. Ground every question in the supplied intent and prior-tier context. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity, prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve free-text expansion. Constitution questions must focus on purpose and non-negotiable product/operational/security/privacy boundaries; do not invent corporate boards, shareholders, market strategy, or enterprise governance unless the product intent calls for them. Requirements questions focus on user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred."""
         stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
         prior_tiers: str = dspy.InputField(desc="Current prior-tier specifications, if any.")
         current_answers: str = dspy.InputField(desc="Saved discovery input and current draft context.")
