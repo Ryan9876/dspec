@@ -5,6 +5,7 @@ import uvicorn
 from dspy.utils import DummyLM
 
 from dspec.app import app, engine
+import dspec.spec_engine as spec_engine
 from test_app import DRAFTS
 
 
@@ -24,6 +25,13 @@ def fixture_lm(selected):
     })
 
 
+async def fixture_selected_for_inference(gateway):
+    # This server intentionally replaces only the model boundary with DummyLM.
+    # Keep provider selection deterministic without probing a real local service.
+    return gateway.selected()
+
+
 if __name__ == "__main__":
     engine._lm = fixture_lm
+    spec_engine.selected_for_inference = fixture_selected_for_inference
     uvicorn.run(app, host="127.0.0.1", port=3210)
