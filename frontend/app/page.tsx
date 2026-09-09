@@ -37,6 +37,7 @@ type DiscoveryQuestion = {
 type DiscoveryResult = { questions:DiscoveryQuestion[]; gaps_found:string[] };
 type Health = {
   status: string; version: string; port: number; active_provider: {provider:string;model:string};
+  active_provider_ready?: boolean;
   detected_local_services?: Record<string,{online:boolean;models:string[]}>;
   cloud_provider_readiness?: Record<string,boolean>;
   dspy?: {available:boolean;optimization:string;mipro_v2:string};
@@ -108,6 +109,7 @@ export default function Home(){
   },[loadSession,session]);
 
   useEffect(()=>{ void refreshHealth(); void refreshSessions(); },[]); // intentional bootstrap
+  useEffect(()=>{ const timer=window.setInterval(()=>{void refreshHealth()},5000); return ()=>window.clearInterval(timer); },[refreshHealth]);
   useEffect(()=>{ if(session){ setDraft(session.drafts?.[stage]?.content??session.specs[stage]?.content??""); setReview(session.specs[stage]?.review??{}); } },[stage,session?.id]);
 
   useEffect(()=>{
@@ -277,12 +279,25 @@ export default function Home(){
   const draftDirty=draft!==(current?.content??"");
   const activeProviderReady=useMemo(()=>{
     if(!health)return false;
+    if(typeof health.active_provider_ready==="boolean")return health.active_provider_ready;
     const provider=health.active_provider.provider;
     if(provider==="lm_studio"||provider==="ollama"){
-      return health.detected_local_services?.[provider]?.online===true;
+      const service=health.detected_local_services?.[provider];
+      return service?.online===true && service.models.includes(health.active_provider.model);
     }
     return health.cloud_provider_readiness?.[provider]===true;
   },[health]);
+  const activeProviderStatus=useMemo(()=>{
+    if(!health)return "offline";
+    const provider=health.active_provider.provider;
+    if(provider==="lm_studio"||provider==="ollama"){
+      const service=health.detected_local_services?.[provider];
+      if(!service?.online)return "offline";
+      if(!service.models.length)return "no model";
+      if(!activeProviderReady)return "select model";
+    }
+    return activeProviderReady?"ready":"not configured";
+  },[health,activeProviderReady]);
 
   return <main className="min-h-screen">
     <header className="sticky top-0 z-30 border-b border-slate-800/90 bg-[#0B0F17]/90 backdrop-blur-xl">
@@ -294,7 +309,7 @@ export default function Home(){
         <div className="ml-auto flex items-center gap-2">
           <button className="badge bg-slate-950/60" aria-label="LLM provider switcher" onClick={()=>setProviderOpen(true)}>
             <span className={`dot ${activeProviderReady?"ok":"bad"}`}/><Cpu className="h-3.5 w-3.5"/>
-            {health?`${health.active_provider.provider} · ${health.active_provider.model} · ${activeProviderReady?"ready":"offline"}`:"backend offline"}
+            {health?`${health.active_provider.provider} · ${health.active_provider.model} · ${activeProviderStatus}`:"backend offline"}
             <Settings2 className="h-3.5 w-3.5"/>
           </button>
           <span className="badge"><Activity className="h-3.5 w-3.5"/>127.0.0.1:3210</span>
@@ -477,6 +492,10 @@ function ProviderModal({health,recovery,onClose,onChanged}:{health:Health|null;r
   const [provider,setProvider]=useState(health?.active_provider.provider??"lm_studio");
   const [model,setModel]=useState(health?.active_provider.model??"");
   const [key,setKey]=useState(""); const [err,setErr]=useState("");
+  const localProvider=provider==="lm_studio"||provider==="ollama";
+  const localService=localProvider?health?.detected_local_services?.[provider]:undefined;
+  const localModels=localService?.models??[];
+  useEffect(()=>{ if(localProvider&&localModels.length&&!localModels.includes(model))setModel(localModels[0]); },[provider,health,model,localProvider,localModels.join("|")]);
   async function save(){
     setErr("");
     try{await api("/api/provider/select",{method:"POST",body:JSON.stringify({provider,model,api_key:key||null})});await onChanged();}
@@ -488,7 +507,8 @@ function ProviderModal({health,recovery,onClose,onChanged}:{health:Health|null;r
       <div className="mb-4"><div className="text-lg font-semibold">LLM provider</div><div className="text-xs text-slate-500">Changes apply to subsequent generation calls without restarting DSpec.</div></div>
       {recovery&&<div className="mb-4 rounded-lg border border-amber-500/25 bg-amber-500/8 p-3 text-xs text-amber-100"><div className="font-semibold">Generation interrupted</div><div className="mt-1 leading-5 text-amber-100/75">{recovery.message}</div><div className="mt-1 leading-5">{recovery.statePreserved?"Saved project state is preserved. ":""}Choose a healthy local provider or configure/select a cloud fallback.</div>{!!recovery.fallbackOptions.length&&<div className="mt-2 flex flex-wrap gap-1.5">{recovery.fallbackOptions.map(item=><span key={item} className="rounded bg-slate-950/50 px-2 py-1">{item==="lm_studio"?"LM Studio":item==="ollama"?"Ollama":item==="openai"?"OpenAI":"Anthropic"} · {(item==="lm_studio"||item==="ollama")?(health?.detected_local_services?.[item]?.online?"ready":"offline"):(health?.cloud_provider_readiness?.[item]?"configured":"needs key")}</span>)}</div>}</div>}
       <label className="mb-3 block text-xs text-slate-400">Provider<select className="input mt-1" value={provider} onChange={e=>setProvider(e.target.value)}><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
-      <label className="mb-3 block text-xs text-slate-400">Model{(["lm_studio","ollama"].includes(provider)&&(health?.detected_local_services?.[provider]?.models?.length??0)>0)?<select className="input mt-1" value={model} onChange={e=>setModel(e.target.value)}>{health?.detected_local_services?.[provider]?.models.map(m=><option key={m} value={m}>{m}</option>)}</select>:<input className="input mt-1" value={model} onChange={e=>setModel(e.target.value)} placeholder="model identifier"/>}</label>
+      <label className="mb-1 block text-xs text-slate-400">Model{(localProvider&&localModels.length>0)?<select className="input mt-1" value={model} onChange={e=>setModel(e.target.value)}>{localModels.map(m=><option key={m} value={m}>{m}</option>)}</select>:<input className="input mt-1" value={model} onChange={e=>setModel(e.target.value)} placeholder="model identifier"/>}</label>
+      {localProvider&&<div className={`mb-3 text-[11px] ${localService?.online?(localModels.length?"text-emerald-300":"text-amber-200"):"text-rose-300"}`}>{!localService?.online?"Local server not detected.":localModels.length?`${localModels.length} model${localModels.length===1?"":"s"} detected automatically.`:"Local server is online, but it is not exposing a loaded model yet."}</div>}
       {(provider==="openai"||provider==="anthropic")&&<label className="block text-xs text-slate-400">API key <span className="text-slate-600">(write-only)</span><input className="input mt-1" type="password" value={key} onChange={e=>setKey(e.target.value)} autoComplete="off" placeholder="Leave blank to keep existing key"/></label>}
       {err&&<div className="mt-3 text-xs text-rose-300">{err}</div>}
       <div className="mt-5 flex justify-end gap-2"><button className="btn" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>void save()}>Apply provider</button></div>

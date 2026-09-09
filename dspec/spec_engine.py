@@ -17,6 +17,7 @@ from .dspy_signatures import (
 from .dspy_runtime import make_lm
 from .optimization_store import load_promoted_state
 from .provider import ProviderGateway
+from .provider_selection import selected_for_inference
 from .quality import evaluate
 
 _OUTPUT_FIELDS = {
@@ -96,7 +97,7 @@ class SpecEngine:
             raise ValueError("Unsupported or unavailable DSpec stage.")
         import dspy
 
-        selected = self.gateway.selected()
+        selected = await selected_for_inference(self.gateway)
         lm = self._lm(selected)
         signature = _SIGNATURES[stage]
         output_field = _OUTPUT_FIELDS[stage]
@@ -169,7 +170,7 @@ class SpecEngine:
 
         import dspy
 
-        selected = self.gateway.selected()
+        selected = await selected_for_inference(self.gateway)
         lm = self._lm(selected)
         base = dspy.ChainOfThought(ReviseSpec)
         base.set_lm(lm)
@@ -233,7 +234,7 @@ class SpecEngine:
             }
         import dspy
 
-        selected = self.gateway.selected()
+        selected = await selected_for_inference(self.gateway)
         lm = self._lm(selected)
         program = dspy.Predict(SemanticSpecReview)
         with dspy.context(lm=lm):
@@ -301,7 +302,7 @@ class SpecEngine:
             raise RuntimeError("DSPy discovery signature is unavailable.")
         import dspy
 
-        selected = self.gateway.selected()
+        selected = await selected_for_inference(self.gateway)
         lm = self._lm(selected)
         program = dspy.Predict(DiscoverSpecGaps)
         current = session.get("specs", {}).get(stage, {}).get("content", "")

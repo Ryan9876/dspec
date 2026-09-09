@@ -21,6 +21,7 @@ from .config import APP_VERSION, BUILD_HASH, HOST, PORT
 from .dspy_signatures import status as dspy_status
 from .exporter import build_bundle
 from .provider import ProviderGateway, public_discovery
+from .provider_selection import reconcile_selected
 from .quality import evaluate
 from .logging_utils import configure_logging
 from .spec_engine import SpecEngine
@@ -185,7 +186,7 @@ async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str
 async def health() -> dict[str, Any]:
     db.init_db()
     discovery = await gateway.discover()
-    selected = gateway.selected()
+    selected, selected_ready = reconcile_selected(gateway, discovery)
     return {
         "status": "healthy",
         "version": APP_VERSION,
@@ -194,6 +195,7 @@ async def health() -> dict[str, Any]:
         "port": PORT,
         "database": "connected",
         "active_provider": selected,
+        "active_provider_ready": selected_ready,
         "detected_local_services": {
             "lm_studio": public_discovery(discovery)["lm_studio"],
             "ollama": public_discovery(discovery)["ollama"],
@@ -209,7 +211,8 @@ async def health() -> dict[str, Any]:
 @app.get("/api/providers")
 async def providers() -> dict[str, Any]:
     found = await gateway.discover()
-    return {"active": gateway.selected(), "providers": public_discovery(found)}
+    selected, selected_ready = reconcile_selected(gateway, found)
+    return {"active": selected, "active_ready": selected_ready, "providers": public_discovery(found)}
 
 
 @app.post("/api/provider/select")
