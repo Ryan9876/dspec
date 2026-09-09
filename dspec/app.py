@@ -66,6 +66,13 @@ class ReviewRequest(BaseModel):
     stage: Literal["constitution", "requirements", "solution", "tasks"]
 
 
+class RevisionApplyRequest(BaseModel):
+    session_id: str
+    stage: Literal["constitution", "requirements", "solution", "tasks"]
+    content: str = Field(min_length=1)
+    instruction: str = Field(min_length=1, max_length=4000)
+
+
 class ApproveRequest(BaseModel):
     session_id: str
     stage: Literal["constitution", "requirements", "solution", "tasks"]
@@ -275,6 +282,35 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
         }
     db.update_spec_review(spec["id"], review["score"], review)
     return review
+
+
+@app.post("/api/spec/revise")
+async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
+    session = _session_or_404(req.session_id)
+    try:
+        content, metrics, review = await engine.revise(
+            session,
+            req.stage,
+            req.content,
+            req.instruction,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            {
+                "error": "revision_unavailable",
+                "message": str(exc),
+                "state_preserved": True,
+            },
+        ) from exc
+    draft = db.save_draft_buffer(req.session_id, req.stage, content)
+    return {
+        "content": content,
+        "review": review,
+        "metrics": metrics,
+        "draft": draft,
+        "formal_revision_created": False,
+    }
 
 
 @app.post("/api/spec/approve")
