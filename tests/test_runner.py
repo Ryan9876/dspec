@@ -165,3 +165,35 @@ def test_manifest_package_name_must_match_simple_release_version(
         runner._verify_and_apply_release()
 
     assert not (release_home / "runtime" / "app").exists()
+
+
+def test_human_status_uses_simple_version_and_readable_provider_state():
+    text = runner.format_status(
+        {
+            "version": "0.1.1",
+            "runner_version": "0.1.1",
+            "active_release": {"version": "0.1.1"},
+            "release_manifest": {
+                "status": "found",
+                "release_version": "0.1.2",
+                "validation_state": "validated",
+                "package_filename": "DSpec-v0.1.2.zip",
+            },
+            "health": {
+                "active_provider": {"provider": "lm_studio", "model": "qwen"},
+                "detected_local_services": {
+                    "lm_studio": {"online": True, "models": ["qwen"]},
+                    "ollama": {"online": False, "models": []},
+                },
+                "cloud_provider_readiness": {"openai": True, "anthropic": False},
+            },
+        }
+    )
+
+    assert "DSpec 0.1.1" in text
+    assert "Published release: 0.1.2 (validated)" in text
+    assert "LM Studio: Ready (1 model)" in text
+    assert "Ollama: Offline" in text
+    assert "OpenAI: Ready" in text
+    assert "Anthropic: Not configured" in text
+    assert "build_hash" not in text
