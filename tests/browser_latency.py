@@ -8,12 +8,14 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
-from statistics import mean
 
-from playwright.sync_api import sync_playwright, expect
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = Path(os.environ.get("DSPEC_BROWSER_LATENCY_REPORT", ROOT / "evidence" / "browser-latency.json"))
+MODAL_SCREENSHOT = Path(
+    os.environ.get("DSPEC_PROVIDER_MODAL_SCREENSHOT", ROOT / "evidence" / "provider-modal.png")
+)
 LIMIT_MS = 50.0
 
 
@@ -32,72 +34,99 @@ def wait_health(timeout: float = 30.0) -> None:
     raise RuntimeError(f"DSpec did not become healthy: {last}")
 
 
-MEASURE_JS = r"""
-async ({buttonName, targetText, targetVisible}) => {
-  const visible = (el) => {
-    const style = getComputedStyle(el);
-    const rect = el.getBoundingClientRect();
-    return style.display !== 'none'
-      && style.visibility !== 'hidden'
-      && Number(style.opacity || '1') !== 0
-      && rect.width > 0
-      && rect.height > 0;
-  };
+def measure_ui_latency(page) -> dict[str, object]:
+    return page.evaluate(
+        """async () => {
+            const thresholdMs = 50;
+            const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+            const exactLeafText = (text) =>
+                Array.from(document.querySelectorAll("body *")).some(
+                    el => el.children.length === 0
+                      && (el.textContent || "").trim() === text
+                      && el.getClientRects().length > 0
+                );
+            const buttonByText = (text) =>
+                Array.from(document.querySelectorAll("button")).find(button => {
+                    if ((button.textContent || "").trim() === text) return true;
+                    return Array.from(button.querySelectorAll("span")).some(
+                        span => span.children.length === 0
+                          && (span.textContent || "").trim() === text
+                    );
+                });
 
-  const button = [...document.querySelectorAll('button')].find((el) =>
-    el.getAttribute('aria-label') === buttonName
-    || (el.textContent || '').trim() === buttonName
-  );
-  if (!button) throw new Error('button not found: ' + buttonName);
+            async function measure(button, predicate, label) {
+                if (!button) throw new Error("Missing latency-test button: " + label);
+                const start = performance.now();
+                button.click();
+                const deadline = start + 1000;
+                while (performance.now() < deadline) {
+                    await frame();
+                    if (predicate()) {
+                        await frame();
+                        return performance.now() - start;
+                    }
+                }
+                throw new Error("Timed out waiting for rendered state: " + label);
+            }
 
-  const targetMatches = () => [...document.querySelectorAll('body *')].some((el) =>
-    (el.textContent || '').trim() === targetText && visible(el)
-  );
+            const samples = {
+                stage_switch_ms: [],
+                provider_modal_open_ms: [],
+                provider_modal_close_ms: [],
+                workspace_switch_ms: [],
+            };
 
-  const initial = targetMatches();
-  if (initial === targetVisible) {
-    throw new Error(
-      'target already in expected state before click: '
-      + targetText + ' visible=' + String(targetVisible)
-    );
-  }
+            for (let i = 0; i < 4; i += 1) {
+                samples.stage_switch_ms.push(
+                    await measure(buttonByText("Solution"), () => exactLeafText("Solution draft"), "Solution draft")
+                );
+                samples.stage_switch_ms.push(
+                    await measure(buttonByText("Requirements"), () => exactLeafText("Requirements draft"), "Requirements draft")
+                );
+            }
 
-  const start = performance.now();
-  button.click();
+            for (let i = 0; i < 5; i += 1) {
+                const providerButton = document.querySelector('button[aria-label="LLM provider switcher"]');
+                samples.provider_modal_open_ms.push(
+                    await measure(providerButton, () => exactLeafText("LLM provider"), "provider modal open")
+                );
+                samples.provider_modal_close_ms.push(
+                    await measure(buttonByText("Cancel"), () => !exactLeafText("LLM provider"), "provider modal close")
+                );
+            }
 
-  return await new Promise((resolve, reject) => {
-    const deadline = start + 1000;
-    const check = () => {
-      const now = performance.now();
-      if (targetMatches() === targetVisible) {
-        resolve(now - start);
-        return;
-      }
-      if (now >= deadline) {
-        reject(new Error(
-          'timed out waiting for target state: '
-          + targetText + ' visible=' + String(targetVisible)
-        ));
-        return;
-      }
-      requestAnimationFrame(check);
-    };
-    check();
-  });
-}
-"""
+            for (let i = 0; i < 3; i += 1) {
+                samples.workspace_switch_ms.push(
+                    await measure(
+                        buttonByText("Repository Audit"),
+                        () => exactLeafText("Local repository audit"),
+                        "repository audit workspace"
+                    )
+                );
+                samples.workspace_switch_ms.push(
+                    await measure(
+                        buttonByText("Spec Builder"),
+                        () => exactLeafText("Requirements draft"),
+                        "spec builder workspace"
+                    )
+                );
+            }
 
-
-def summarize(samples: list[float]) -> dict[str, float | int]:
-    ordered = sorted(samples)
-    p95_index = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
-    return {
-        "count": len(samples),
-        "mean_ms": round(mean(samples), 3),
-        "p95_ms": round(ordered[p95_index], 3),
-        "max_ms": round(max(samples), 3),
-        "limit_ms": LIMIT_MS,
-    }
+            const all = Object.values(samples).flat();
+            const sorted = [...all].sort((a, b) => a - b);
+            const p95 = sorted[Math.max(0, Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * 0.95)))];
+            return {
+                threshold_ms: thresholdMs,
+                max_ms: Math.max(...all),
+                p95_ms: p95,
+                mean_ms: all.reduce((sum, value) => sum + value, 0) / all.length,
+                sample_count: all.length,
+                samples,
+                measurement_boundary:
+                    "DOM state transition observed in Chromium plus one subsequent requestAnimationFrame; Playwright transport excluded.",
+            };
+        }"""
+    )
 
 
 def main() -> None:
@@ -119,104 +148,74 @@ def main() -> None:
     report: dict[str, object] = {
         "status": "FAIL",
         "requirement": "NFR-1.1",
-        "limit_ms": LIMIT_MS,
-        "measurement_scope": (
-            "Chromium in-page performance.now() from programmatic button click "
-            "until the required rendered DOM state becomes visible/hidden."
-        ),
+        "threshold_ms": LIMIT_MS,
     }
-
+    browser = None
     try:
         wait_health()
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page(viewport={"width": 1512, "height": 982})
             page.set_default_timeout(15_000)
+            page_errors: list[str] = []
+            console_errors: list[str] = []
+            page.on("pageerror", lambda error: page_errors.append(str(error)))
+            page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
             page.goto("http://127.0.0.1:3210", wait_until="domcontentloaded")
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible(timeout=10_000)
 
-            # Establish a normal active project before measuring workflow interactions.
             page.once("dialog", lambda dialog: dialog.accept("latency-e2e"))
             page.get_by_role("button", name="New project").click()
             expect(page.get_by_text("latency-e2e", exact=True)).to_be_visible(timeout=10_000)
-            expect(page.get_by_text("Constitution draft", exact=True)).to_be_visible(timeout=10_000)
+            expect(page.locator(".monaco-editor")).to_be_visible(timeout=15_000)
 
-            stage_samples: list[float] = []
-            stage_sequence = [
-                ("Requirements", "Requirements draft"),
-                ("Solution", "Solution draft"),
-                ("Tasks", "Tasks draft"),
-                ("Constitution", "Constitution draft"),
-            ]
-            for _ in range(5):
-                for button_name, target_text in stage_sequence:
-                    elapsed = float(page.evaluate(
-                        MEASURE_JS,
-                        {
-                            "buttonName": button_name,
-                            "targetText": target_text,
-                            "targetVisible": True,
-                        },
-                    ))
-                    stage_samples.append(elapsed)
+            page.get_by_role("button", name="Requirements").click()
+            expect(page.get_by_text("Requirements draft", exact=True)).to_be_visible()
 
-            modal_samples: list[float] = []
-            for _ in range(10):
-                opened = float(page.evaluate(
-                    MEASURE_JS,
-                    {
-                        "buttonName": "LLM provider switcher",
-                        "targetText": "LLM provider",
-                        "targetVisible": True,
-                    },
-                ))
-                modal_samples.append(opened)
+            measured = measure_ui_latency(page)
+            report.update(measured)
 
-                closed = float(page.evaluate(
-                    MEASURE_JS,
-                    {
-                        "buttonName": "Cancel",
-                        "targetText": "LLM provider",
-                        "targetVisible": False,
-                    },
-                ))
-                modal_samples.append(closed)
+            page.get_by_role("button", name="LLM provider switcher").click()
+            expect(page.get_by_text("LLM provider", exact=True)).to_be_visible()
+            MODAL_SCREENSHOT.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(MODAL_SCREENSHOT), full_page=True)
+            page.get_by_role("button", name="Cancel").click()
 
-            stage_summary = summarize(stage_samples)
-            modal_summary = summarize(modal_samples)
-            all_samples = stage_samples + modal_samples
-            overall = summarize(all_samples)
+            if page_errors:
+                raise AssertionError(f"Browser page errors: {page_errors}")
+            if console_errors:
+                raise AssertionError(f"Browser console errors: {console_errors}")
+
+            max_ms = float(measured["max_ms"])
+            if max_ms > LIMIT_MS:
+                raise AssertionError(
+                    f"NFR-1.1 failed: max client render latency {max_ms:.3f} ms > {LIMIT_MS:.3f} ms"
+                )
 
             report.update({
                 "status": "PASS",
-                "stage_switch": {
-                    **stage_summary,
-                    "samples_ms": [round(x, 3) for x in stage_samples],
-                },
-                "provider_modal_toggle": {
-                    **modal_summary,
-                    "samples_ms": [round(x, 3) for x in modal_samples],
-                },
-                "overall": overall,
-                "acceptance": "PASS" if overall["max_ms"] <= LIMIT_MS else "FAIL",
+                "acceptance": "PASS",
                 "evidence_boundary": (
-                    "This measures client-side rendered interaction latency in CI Chromium. "
-                    "It does not establish live-LLM first-token latency, target-Mac GUI latency, "
-                    "or performance under arbitrary end-user hardware/load."
+                    "PASS applies to measured client-side stage/workspace/modal interactions in CI Chromium. "
+                    "It does not establish target-Mac GUI latency or live-LLM first-chunk latency."
                 ),
             })
-
-            if overall["max_ms"] > LIMIT_MS:
-                report["status"] = "FAIL"
-                raise AssertionError(
-                    f"NFR-1.1 failed: observed max {overall['max_ms']}ms exceeds {LIMIT_MS}ms"
-                )
-
             browser.close()
+            browser = None
+    except BaseException as exc:
+        report["error"] = repr(exc)
+        raise
     finally:
         REPORT.parent.mkdir(parents=True, exist_ok=True)
         REPORT.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        print("BROWSER_LATENCY_REPORT", json.dumps(report), flush=True)
+        print("BROWSER_LATENCY_REPORT", json.dumps(report, sort_keys=True), flush=True)
+
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
         process.terminate()
         try:
