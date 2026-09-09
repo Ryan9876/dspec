@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -42,14 +43,70 @@ class SpecEngine:
         return make_lm(selected["provider"], selected["model"])
 
     @staticmethod
-    def _answers(session: dict[str, Any], stage: str) -> str:
-        rows = [a for a in session.get("answers", []) if a["stage"] == stage]
+    def _project_intent(session: dict[str, Any]) -> str:
+        for answer in session.get("answers", []):
+            if answer.get("stage") == "constitution" and answer.get("question_id") == "assistant-constitution":
+                value = str(answer.get("free_text_payload") or "").strip()
+                if value:
+                    return value
+        return ""
+
+    @staticmethod
+    def _answers(session: dict[str, Any], stage: str, exclude_ids: set[str] | None = None) -> str:
+        excluded = exclude_ids or set()
+        rows = [
+            a for a in session.get("answers", [])
+            if a["stage"] == stage and a.get("question_id") not in excluded
+        ]
         if not rows:
             return "No saved discovery answers for this stage."
-        return "\n".join(
-            f"- {a['question_id']}: selected={a.get('selected_option_id') or 'none'}; free_text={a.get('free_text_payload') or ''}"
-            for a in rows
-        )
+
+        question_context: dict[str, dict[str, Any]] = {}
+        gaps: list[str] = []
+        visible_rows: list[dict[str, Any]] = []
+        for answer in rows:
+            if answer.get("question_id") == f"discovery-context-{stage}":
+                try:
+                    payload = json.loads(str(answer.get("free_text_payload") or "{}"))
+                    gaps = [str(item) for item in payload.get("gaps_found", []) if str(item).strip()]
+                    for question in payload.get("questions", []):
+                        if isinstance(question, dict) and question.get("id"):
+                            question_context[str(question["id"])] = question
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+                continue
+            visible_rows.append(answer)
+
+        lines: list[str] = []
+        if gaps:
+            lines.append("Discovery gaps identified: " + "; ".join(gaps))
+        for answer in visible_rows:
+            question_id = str(answer["question_id"])
+            selected_id = str(answer.get("selected_option_id") or "none")
+            user_text = str(answer.get("free_text_payload") or "").strip()
+            context = question_context.get(question_id)
+            if context:
+                question_text = str(context.get("question") or question_id)
+                option = next(
+                    (
+                        item for item in context.get("options", [])
+                        if isinstance(item, dict) and str(item.get("id")) == selected_id
+                    ),
+                    None,
+                )
+                selected_label = str(option.get("label")) if option else selected_id
+                rationale = str(option.get("rationale") or "") if option else ""
+                line = f"- {question_text}: selected={selected_label}"
+                if rationale:
+                    line += f"; rationale={rationale}"
+                if user_text:
+                    line += f"; user_context={user_text}"
+                lines.append(line)
+            else:
+                lines.append(
+                    f"- {question_id}: selected={selected_id}; free_text={user_text}"
+                )
+        return "\n".join(lines) if lines else "No saved discovery answers for this stage."
 
     @staticmethod
     def _prior(session: dict[str, Any], stage: str) -> str:
@@ -62,13 +119,23 @@ class SpecEngine:
                 parts.append(f"# {current.title()}\n{spec['content']}")
         return "\n\n".join(parts) if parts else "No prior tier exists."
 
+    def validate_input(self, session: dict[str, Any], stage: str) -> None:
+        if stage == "constitution" and not self._project_intent(session):
+            raise ValueError("Describe what you want to build before analyzing gaps or generating the Constitution.")
+
     def _inputs(self, session: dict[str, Any], stage: str, instructions: str | None) -> dict[str, str]:
-        answers = self._answers(session, stage)
+        self.validate_input(session, stage)
+        answers = self._answers(
+            session,
+            stage,
+            {"assistant-constitution"} if stage == "constitution" else None,
+        )
         extra = instructions.strip() if instructions else "No additional instruction."
         specs = session.get("specs", {})
         if stage == "constitution":
+            intent = self._project_intent(session)
             return {
-                "raw_idea_description": f"{answers}\n\nAdditional user direction:\n{extra}",
+                "raw_idea_description": f"Project intent:\n{intent}\n\nSaved discovery decisions:\n{answers}\n\nAdditional user direction:\n{extra}",
                 "security_isolation_preferences": (
                     "Preserve explicit user privacy/security/runtime constraints. "
                     "Never invent test, deployment, compliance, or security-certification evidence. "
@@ -110,7 +177,12 @@ class SpecEngine:
 
         def reward(_args: dict[str, Any], pred: dspy.Prediction) -> float:
             content = str(getattr(pred, output_field, "") or "")
-            return float(evaluate(stage, content)["score"])
+            structural_score = float(evaluate(stage, content)["score"])
+            semantic = getattr(pred, "quality_assessment", None)
+            if hasattr(semantic, "model_dump"):
+                semantic = semantic.model_dump()
+            semantic_score = float(semantic.get("rubric_score", 0.0)) if isinstance(semantic, dict) else 0.0
+            return min(structural_score, semantic_score)
 
         program = dspy.Refine(module=base, N=3, reward_fn=reward, threshold=0.90, fail_count=2)
         started = time.perf_counter()
@@ -130,8 +202,27 @@ class SpecEngine:
             semantic_data = {"reported": False}
 
         structural = evaluate(stage, content)
+        semantic_score = float(semantic_data.get("rubric_score", 0.0)) if isinstance(semantic_data, dict) else 0.0
+        combined_score = round(min(float(structural["score"]), semantic_score), 3)
+        must_fix = list(structural.get("must_fix", []))
+        recommendations = list(structural.get("recommendations", []))
+        if semantic_score < 0.90:
+            semantic_fix = {
+                "id": "generation_semantic_quality",
+                "label": "Generation semantic quality",
+                "passed": False,
+                "weight": 0.0,
+                "detail": f"Model-reported semantic completeness {semantic_score:.2f} is below 0.90.",
+                "recommendation": "Refine the draft using the saved product intent and discovery decisions before approval.",
+            }
+            must_fix.append(semantic_fix)
+            recommendations.append(semantic_fix["recommendation"])
         review = {
             **structural,
+            "score": combined_score,
+            "passed": bool(structural["passed"] and semantic_score >= 0.90),
+            "must_fix": must_fix,
+            "recommendations": recommendations,
             "semantic_assessment": semantic_data,
             "refinement": {"module": "dspy.Refine", "attempt_limit": 3, "threshold": 0.90},
             "optimization": {
@@ -300,6 +391,7 @@ class SpecEngine:
     async def discover(self, session: dict[str, Any], stage: str) -> dict[str, Any]:
         if DiscoverSpecGaps is None:
             raise RuntimeError("DSPy discovery signature is unavailable.")
+        self.validate_input(session, stage)
         import dspy
 
         selected = await selected_for_inference(self.gateway)
