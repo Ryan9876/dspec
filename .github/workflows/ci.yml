@@ -102,13 +102,16 @@ jobs:
       - name: Measure NFR-1.1 client interaction latency
         env:
           DSPEC_BROWSER_LATENCY_REPORT: evidence/browser-latency.json
+          DSPEC_PROVIDER_MODAL_SCREENSHOT: evidence/provider-modal.png
         run: python tests/browser_latency.py
       - name: Upload browser latency evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dspec-browser-latency-evidence
-          path: evidence/browser-latency.json
+          path: |
+            evidence/browser-latency.json
+            evidence/provider-modal.png
           if-no-files-found: ignore
           retention-days: 14
 
