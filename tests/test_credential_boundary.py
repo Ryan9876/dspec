@@ -93,6 +93,7 @@ def test_fallback_read_rejects_symlinked_credential_file(client, monkeypatch, tm
     path.parent.mkdir(parents=True, exist_ok=True)
     target = tmp_path / "outside-config.json"
     target.write_text('{"secrets":{"openai":"' + SECRET + '"}}', encoding="utf-8")
+    original_mode = stat.S_IMODE(target.stat().st_mode)
     path.symlink_to(target)
     assert security.load_api_key("openai") is None
-    assert stat.S_IMODE(target.stat().st_mode) != 0o600
+    assert stat.S_IMODE(target.stat().st_mode) == original_mode
