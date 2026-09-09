@@ -439,13 +439,30 @@ def stop(include_tray: bool = True) -> dict:
     return {"status": outcome, "pid": pid}
 
 
+def _release_manifest_status() -> dict:
+    for manifest_path in _manifest_candidates():
+        if not manifest_path.exists():
+            continue
+        data = _load_json(manifest_path)
+        return {
+            "status": "found",
+            "release_version": str(data.get("release_version", "")).strip().lstrip("v") or None,
+            "validation_state": data.get("validation_state"),
+            "package_filename": data.get("package_filename"),
+            "path": str(manifest_path),
+        }
+    return {"status": "not_found"}
+
+
 def status() -> dict:
     health = _health()
+    active_release = _load_json(_marker_path())
     return {
         "health": health,
-        "version": (health or {}).get("version") or APP_VERSION,
+        "version": (health or {}).get("version") or active_release.get("version") or APP_VERSION,
         "runner_version": APP_VERSION,
-        "active_release": _load_json(_marker_path()),
+        "active_release": active_release,
+        "release_manifest": _release_manifest_status(),
         "pid": _read_pid(),
         "port_pid": _port_pid(),
         "tray_pid": _read_tray_pid(),
@@ -454,10 +471,66 @@ def status() -> dict:
     }
 
 
+def _yes_no(value: bool) -> str:
+    return "Ready" if value else "Not configured"
+
+
+def format_status(snapshot: dict) -> str:
+    health = snapshot.get("health")
+    version = str(snapshot.get("version") or APP_VERSION).lstrip("v")
+    lines = [
+        f"DSpec {version}",
+        f"Backend: {'Online' if health else 'Stopped'}",
+        f"Address: http://localhost:{PORT}",
+    ]
+
+    active = snapshot.get("active_release") or {}
+    if active.get("version"):
+        lines.append(f"Installed release: {str(active['version']).lstrip('v')}")
+    else:
+        lines.append(f"Installed release: {version}")
+
+    manifest = snapshot.get("release_manifest") or {}
+    if manifest.get("status") == "found":
+        manifest_version = manifest.get("release_version") or "unknown"
+        state = manifest.get("validation_state") or "unknown"
+        if state == "validated":
+            lines.append(f"Published release: {manifest_version} (validated)")
+        else:
+            lines.append(f"Published release: {manifest_version} ({state})")
+    else:
+        lines.append("Published release: none found")
+
+    if health:
+        provider = health.get("active_provider") or {}
+        lines.extend(
+            [
+                "",
+                f"Provider: {provider.get('provider') or 'unknown'}",
+                f"Model: {provider.get('model') or 'unknown'}",
+            ]
+        )
+        local = health.get("detected_local_services") or {}
+        for key, label in (("lm_studio", "LM Studio"), ("ollama", "Ollama")):
+            service = local.get(key) or {}
+            if service.get("online"):
+                models = service.get("models") or []
+                suffix = f" ({len(models)} model{'s' if len(models) != 1 else ''})" if models else ""
+                lines.append(f"{label}: Ready{suffix}")
+            else:
+                lines.append(f"{label}: Offline")
+        cloud = health.get("cloud_provider_readiness") or {}
+        lines.append(f"OpenAI: {_yes_no(bool(cloud.get('openai')))}")
+        lines.append(f"Anthropic: {_yes_no(bool(cloud.get('anthropic')))}")
+
+    return "\n".join(lines)
+
+
 def cli() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["start", "stop", "status"])
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--human", action="store_true")
     args = parser.parse_args()
     if args.action == "start":
         result = start(not args.no_browser)
@@ -465,6 +538,9 @@ def cli() -> None:
         result = stop()
     else:
         result = status()
+        if args.human:
+            print(format_status(result))
+            return
     print(json.dumps(result, indent=2))
 
 
