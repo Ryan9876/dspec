@@ -213,6 +213,14 @@ def main() -> None:
             raise RuntimeError("DSPEC_DISABLE_TRAY=1 did not suppress tray startup.")
         record(results, "CLI start and runtime health", "PASS", f"{time.monotonic() - start_started:.3f}s", health)
 
+        human_status = run([str(dspec_bin), "status", "--human"], env=env, timeout=30).stdout
+        expected_version = str(health.get("version") or "").lstrip("v")
+        if f"DSpec {expected_version}" not in human_status:
+            raise RuntimeError(f"Human status did not show simple runtime version: {human_status!r}")
+        if expected in human_status:
+            raise RuntimeError("Human status exposed internal commit identity.")
+        record(results, "human-readable status", "PASS", human_status.replace("\n", " | "))
+
         session_name = f"macos-contract-{uuid.uuid4().hex[:8]}"
         _, session = http_json("/api/sessions", "POST", {"bundle_name": session_name, "project_type": "greenfield"})
         session_id = session["id"]
