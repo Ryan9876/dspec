@@ -306,6 +306,88 @@ def main() -> None:
                     sentinel.kill()
                     sentinel.wait(timeout=2)
 
+        # Prove the install-once update contract with a synthetic validated
+        # release. The fixture uses the same tested code with a different
+        # build-info identity, so no live release is published or implied.
+        with tempfile.TemporaryDirectory(prefix="dspec-macos-update-fixture-") as update_tmp:
+            update_root = Path(update_tmp)
+            stage = update_root / "stage"
+            shutil.copytree(install_root / "source", stage)
+            fixture_version = "0.1.2"
+            fixture_build = f"update-fixture-{expected[:16]}"
+            fixture_info = json.loads((stage / "build-info.json").read_text(encoding="utf-8"))
+            fixture_info["version"] = fixture_version
+            fixture_info["build_hash"] = fixture_build
+            (stage / "build-info.json").write_text(json.dumps(fixture_info, indent=2) + "\n", encoding="utf-8")
+
+            release_dir = update_root / "current"
+            release_dir.mkdir()
+            release_package = release_dir / f"DSpec-v{fixture_version}.zip"
+            with zipfile.ZipFile(release_package, "w", zipfile.ZIP_DEFLATED) as archive:
+                for path in sorted(stage.rglob("*")):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(stage).as_posix())
+            release_digest = sha256(release_package)
+            release_manifest = release_dir / "manifest.json"
+            release_manifest.write_text(
+                json.dumps(
+                    {
+                        "release_version": fixture_version,
+                        "release_date": "2026-09-09T00:00:00Z",
+                        "build_hash": fixture_build,
+                        "minimum_runner_version": "0.1.1",
+                        "package_filename": release_package.name,
+                        "sha256": release_digest,
+                        "validation_state": "validated",
+                        "release_notes": "Synthetic hosted-macOS updater fixture only.",
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            update_env = env.copy()
+            update_env["DSPEC_RELEASE_MANIFEST"] = str(release_manifest)
+            updated = run([str(dspec_bin), "start", "--no-browser"], env=update_env, timeout=180)
+            updated_data = json.loads(updated.stdout)
+            updated_health = updated_data.get("health") or wait_health(True)
+            if updated_data.get("release", {}).get("status") != "release_applied":
+                raise RuntimeError(f"Validated release was not applied: {updated_data}")
+            if updated_health.get("version") != fixture_version or updated_health.get("build_hash") != fixture_build:
+                raise RuntimeError(f"Updated runtime identity mismatch: {updated_health}")
+            _, persisted_after_update = http_json(f"/api/sessions/{session_id}")
+            if persisted_after_update.get("drafts", {}).get("constitution", {}).get("content") != draft_text:
+                raise RuntimeError("User draft did not survive governed release update.")
+            record(
+                results,
+                "install-once validated release update",
+                "PASS",
+                f"{fixture_version} applied with checksum verification; persisted draft preserved",
+                updated_data,
+            )
+
+            run([str(dspec_bin), "stop"], env=update_env, timeout=45)
+            wait_health(False, 20)
+
+            # No manifest override on this second start. The installed shell
+            # launcher must select ~/.dspec/runtime/app and therefore execute
+            # the updated DSpec runner/application without another installer.
+            updated_restart = run([str(dspec_bin), "start", "--no-browser"], env=env, timeout=90)
+            updated_restart_data = json.loads(updated_restart.stdout)
+            updated_restart_health = updated_restart_data.get("health") or wait_health(True)
+            if updated_restart_health.get("version") != fixture_version or updated_restart_health.get("build_hash") != fixture_build:
+                raise RuntimeError(f"Updated runtime was not retained for subsequent starts: {updated_restart_health}")
+            record(
+                results,
+                "subsequent start uses updated runtime",
+                "PASS",
+                f"v{fixture_version} remained active without reinstall",
+                updated_restart_data,
+            )
+            run([str(dspec_bin), "stop"], env=env, timeout=45)
+            wait_health(False, 20)
+
         report = {
             "status": "PASS",
             "validation_scope": "github_hosted_macos_arm64_installer_cli_persistence_keychain_launchservices_contract",
