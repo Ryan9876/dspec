@@ -60,6 +60,7 @@ else
   ROOT="$BOOTSTRAP"
 fi
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+cd "$ROOT"
 exec "$HOME/.dspec/venv/bin/python" -m dspec.runner "$@"
 SH
 chmod 700 "$BIN/dspec"
