@@ -73,6 +73,15 @@ try:
         spec_markdown: str = dspy.InputField(desc="Specification draft under review.")
         review: SemanticReviewResult = dspy.OutputField(desc="Independent semantic review result.")
 
+    class ReviseSpec(dspy.Signature):
+        """Apply one explicit review instruction to the current DSpec tier. Return the complete revised Markdown, preserve unrelated valid content and higher-authority constraints, do not broaden scope, and never invent validation, deployment, security-certification, or approval evidence."""
+        stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
+        prior_tiers: str = dspy.InputField(desc="Higher-authority prior tiers that must remain satisfied.")
+        current_spec: str = dspy.InputField(desc="Current active tier draft to revise.")
+        review_instruction: str = dspy.InputField(desc="One concrete must-fix or recommendation to apply.")
+        revised_spec: str = dspy.OutputField(desc="Complete revised Markdown for the active tier.")
+        quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of the revised tier.")
+
     class DiscoverSpecGaps(dspy.Signature):
         """Analyze current product input for the active DSpec stage. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity. Prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve a free-text option. Do not ask implementation trivia that can safely be inferred."""
         stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
@@ -83,7 +92,7 @@ try:
     DSPY_AVAILABLE = True
 except Exception:
     DSPY_AVAILABLE = False
-    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = None  # type: ignore
+    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = ReviseSpec = None  # type: ignore
 
 
 def status() -> dict[str, Any]:
