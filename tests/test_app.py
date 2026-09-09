@@ -269,6 +269,101 @@ def test_review_unavailable_remains_not_tested(client: TestClient, monkeypatch: 
     assert approval.status_code == 409
 
 
+def test_review_revision_applies_to_draft_without_creating_formal_revision(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sid = create_session(client, "review-revision-apply")
+    original = DRAFTS["requirements"]
+    saved = client.post(
+        "/api/spec/save",
+        json={"session_id": sid, "stage": "requirements", "content": original},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["revision_number"] == 1
+
+    revised = original + "\n\n## Applied review correction\nRecovery behavior is explicit."
+
+    async def fake_revise(session, stage, content, instruction):
+        assert session["id"] == sid
+        assert stage == "requirements"
+        assert content == original
+        assert instruction == "Add explicit recovery behavior."
+        return revised, {
+            "provider": "lm_studio",
+            "model": "fixture-model",
+            "inference_latency_ms": 1,
+            "tokens_generated": None,
+            "tokens_per_second": None,
+        }, {
+            "score": 0.95,
+            "threshold": 0.90,
+            "passed": True,
+            "passing": [{"id": "fixture", "label": "Recovery", "detail": "Recovery is explicit."}],
+            "must_fix": [],
+            "recommendations": [],
+        }
+
+    monkeypatch.setattr(engine, "revise", fake_revise)
+    response = client.post(
+        "/api/spec/revise",
+        json={
+            "session_id": sid,
+            "stage": "requirements",
+            "content": original,
+            "instruction": "Add explicit recovery behavior.",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["content"] == revised
+    assert body["formal_revision_created"] is False
+
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["drafts"]["requirements"]["content"] == revised
+    assert session["specs"]["requirements"]["revision_number"] == 1
+    assert session["specs"]["requirements"]["content"] == original
+
+
+def test_review_revision_failure_preserves_existing_state(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sid = create_session(client, "review-revision-failure")
+    original = DRAFTS["requirements"]
+    client.post(
+        "/api/spec/save",
+        json={"session_id": sid, "stage": "requirements", "content": original},
+    )
+    client.post(
+        "/api/spec/draft",
+        json={"session_id": sid, "stage": "requirements", "content": "unsaved local draft"},
+    )
+
+    async def unavailable(session, stage, content, instruction):
+        raise RuntimeError("provider offline")
+
+    monkeypatch.setattr(engine, "revise", unavailable)
+    response = client.post(
+        "/api/spec/revise",
+        json={
+            "session_id": sid,
+            "stage": "requirements",
+            "content": "unsaved local draft",
+            "instruction": "Apply review fix.",
+        },
+    )
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["error"] == "revision_unavailable"
+    assert detail["state_preserved"] is True
+
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["drafts"]["requirements"]["content"] == "unsaved local draft"
+    assert session["specs"]["requirements"]["revision_number"] == 1
+    assert session["specs"]["requirements"]["content"] == original
+
+
 def test_draft_buffer_survives_readback_without_revision_noise(client: TestClient):
     sid = create_session(client, "draft-buffer")
     first = client.post("/api/spec/draft", json={"session_id": sid, "stage": "solution", "content": "first live edit"})
