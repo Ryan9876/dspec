@@ -37,6 +37,7 @@ type DiscoveryQuestion = {
 type DiscoveryResult = { questions:DiscoveryQuestion[]; gaps_found:string[] };
 type Health = {
   status: string; version: string; port: number; active_provider: {provider:string;model:string};
+  active_provider_ready?: boolean;
   detected_local_services?: Record<string,{online:boolean;models:string[]}>;
   cloud_provider_readiness?: Record<string,boolean>;
   dspy?: {available:boolean;optimization:string;mipro_v2:string};
@@ -278,6 +279,7 @@ export default function Home(){
   const draftDirty=draft!==(current?.content??"");
   const activeProviderReady=useMemo(()=>{
     if(!health)return false;
+    if(typeof health.active_provider_ready==="boolean")return health.active_provider_ready;
     const provider=health.active_provider.provider;
     if(provider==="lm_studio"||provider==="ollama"){
       const service=health.detected_local_services?.[provider];
