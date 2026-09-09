@@ -53,7 +53,7 @@ const LABELS: Record<Stage,string> = {
   constitution:"Constitution", requirements:"Requirements", solution:"Solution", tasks:"Tasks"
 };
 const ASSIST: Record<Stage,{title:string;prompt:string;choices:string[]}> = {
-  constitution:{title:"Operating boundaries",prompt:"What constraints should the implementation never violate?",choices:["Local-first / private by default","Cloud-capable with explicit consent","Recommend a safe default"]},
+  constitution:{title:"Project intent",prompt:"What do you want to build or change? Describe the user, problem, and desired outcome.",choices:["Local-first / private by default","Cloud-capable with explicit consent","Recommend a safe default"]},
   requirements:{title:"Outcome clarity",prompt:"What should a user be able to accomplish, including failure and recovery paths?",choices:["Define the core happy path","Identify edge cases first","Recommend complete coverage"]},
   solution:{title:"Architecture decisions",prompt:"Which technical decisions are constraints versus preferences?",choices:["Preserve stated stack","Optimize for lowest complexity","Recommend based on requirements"]},
   tasks:{title:"Execution strategy",prompt:"How should implementation be sequenced and verified?",choices:["Small reversible slices","Capability milestones","Recommend lowest-risk sequence"]},
@@ -178,7 +178,11 @@ export default function Home(){
         try{
           const url=initial?"/api/spec/stream":`/api/spec/stream/resume?session_id=${encodeURIComponent(session.id)}&last_seq=${lastSeq}`;
           const response=await fetch(url,initial?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:session.id,stage})}:undefined);
-          if(!response.ok||!response.body)throw new Error(await response.text());
+          if(!response.ok||!response.body){
+            const message=await response.text();
+            if(response.status>=400&&response.status<500)terminal=true;
+            throw new Error(message);
+          }
           if(initial){
             const baseline=Number(response.headers.get("X-DSpec-Start-Seq")??"0");
             if(Number.isFinite(baseline))lastSeq=Math.max(lastSeq,baseline);
@@ -415,8 +419,13 @@ function AssistantCard({stage,session,onSave}:{stage:Stage;session:Session;onSav
   },[stage,session.id,saved?.updated_at]);
 
   async function analyze(){
+    if(stage==="constitution"&&!text.trim()){
+      setErr("Describe what you want to build before analyzing gaps.");
+      return;
+    }
     setLoading(true);setErr("");
     try{
+      await onSave(`assistant-${stage}`,choice,text);
       const result=await api<DiscoveryResult>("/api/assist/questions",{method:"POST",body:JSON.stringify({session_id:session.id,stage})});
       setDiscovery(result);
     }catch(e){setErr(String(e));}
@@ -427,10 +436,17 @@ function AssistantCard({stage,session,onSave}:{stage:Stage;session:Session;onSav
     <div className="mb-1 flex items-center gap-2 font-semibold"><Sparkles className="h-4 w-4 text-indigo-300"/>Field assistant</div>
     <div className="mb-3 text-xs text-slate-500">{ASSIST[stage].title}</div>
     <p className="mb-3 text-sm leading-5 text-slate-300">{ASSIST[stage].prompt}</p>
-    <div className="space-y-1.5">{ASSIST[stage].choices.map(c=><label key={c} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400 hover:border-slate-700"><input type="radio" checked={choice===c} onChange={()=>setChoice(c)} className="mt-0.5"/><span>{c}</span></label>)}</div>
-    <textarea className="input mt-3 min-h-24 resize-y text-xs" value={text} onChange={e=>setText(e.target.value)} placeholder="Add product-level context or constraints…"/>
+    {stage==="constitution"?<>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Project brief</div>
+      <textarea className="input min-h-28 resize-y text-xs" value={text} onChange={e=>setText(e.target.value)} placeholder="Describe what you want to build, who it is for, and the outcome you want…"/>
+      <div className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-widest text-slate-500">Operating boundary</div>
+      <div className="space-y-1.5">{ASSIST[stage].choices.map(c=><label key={c} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400 hover:border-slate-700"><input type="radio" checked={choice===c} onChange={()=>setChoice(c)} className="mt-0.5"/><span>{c}</span></label>)}</div>
+    </>:<>
+      <div className="space-y-1.5">{ASSIST[stage].choices.map(c=><label key={c} className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400 hover:border-slate-700"><input type="radio" checked={choice===c} onChange={()=>setChoice(c)} className="mt-0.5"/><span>{c}</span></label>)}</div>
+      <textarea className="input mt-3 min-h-24 resize-y text-xs" value={text} onChange={e=>setText(e.target.value)} placeholder="Add product-level context or constraints…"/>
+    </>}
     <div className="mt-2 grid grid-cols-2 gap-2">
-      <button className="btn" onClick={()=>void onSave(`assistant-${stage}`,choice,text)}>Save input</button>
+      <button className="btn" onClick={()=>void onSave(`assistant-${stage}`,choice,text)}>{stage==="constitution"?"Save project brief":"Save input"}</button>
       <button className="btn btn-primary flex items-center justify-center gap-1.5" disabled={loading} onClick={()=>void analyze()}>{loading?<LoaderCircle className="h-4 w-4 animate-spin"/>:<Sparkles className="h-4 w-4"/>}Analyze gaps</button>
     </div>
     {err&&<div className="mt-3 text-xs text-rose-300">{err}</div>}
