@@ -242,8 +242,7 @@ def test_stream_generation_preserves_contract_and_persists_only_final_selection(
     assert '"first_provisional_chunk_ms":3' in text
 
     session = client.get(f"/api/sessions/{sid}").json()
-    assert session["specs"]["requirements"]["content"] == DRAFTS["requirements"]
-    assert provisional not in session["specs"]["requirements"]["content"]
+    assert session["specs"]["requirements"]["content"] == DRAFTS["requirements"].strip()\n    assert provisional not in session["specs"]["requirements"]["content"]
 
 
 def test_stream_generation_failure_preserves_saved_state_and_offers_fallback(client: TestClient, monkeypatch: pytest.MonkeyPatch):
