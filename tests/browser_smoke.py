@@ -30,6 +30,97 @@ def wait_health(timeout: float = 30.0) -> None:
     raise RuntimeError(f"DSpec did not become healthy: {last}")
 
 
+def measure_ui_latency(page) -> dict[str, object]:
+    """Measure NFR-1.1 entirely inside Chromium, excluding Playwright transport time."""
+    return page.evaluate(
+        """async () => {
+            const thresholdMs = 50;
+            const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+            const exactLeafText = (text) =>
+                Array.from(document.querySelectorAll("body *")).some(
+                    el => el.children.length === 0 && (el.textContent || "").trim() === text
+                );
+            const buttonByText = (text) =>
+                Array.from(document.querySelectorAll("button")).find(button => {
+                    if ((button.textContent || "").trim() === text) return true;
+                    return Array.from(button.querySelectorAll("span")).some(
+                        span => span.children.length === 0 && (span.textContent || "").trim() === text
+                    );
+                });
+
+            async function measure(button, predicate, label) {
+                if (!button) throw new Error(`Missing latency-test button: ${label}`);
+                const start = performance.now();
+                button.click();
+                const deadline = start + 1000;
+                while (performance.now() < deadline) {
+                    await frame();
+                    if (predicate()) {
+                        // Require one additional animation frame after the target
+                        // state is committed so the sample includes a render-frame boundary.
+                        await frame();
+                        return performance.now() - start;
+                    }
+                }
+                throw new Error(`Timed out waiting for rendered state: ${label}`);
+            }
+
+            const samples = {
+                stage_switch_ms: [],
+                provider_modal_open_ms: [],
+                provider_modal_close_ms: [],
+                workspace_switch_ms: [],
+            };
+
+            for (let i = 0; i < 3; i += 1) {
+                samples.stage_switch_ms.push(
+                    await measure(buttonByText("Solution"), () => exactLeafText("Solution draft"), "Solution draft")
+                );
+                samples.stage_switch_ms.push(
+                    await measure(buttonByText("Requirements"), () => exactLeafText("Requirements draft"), "Requirements draft")
+                );
+            }
+
+            for (let i = 0; i < 3; i += 1) {
+                const providerButton = document.querySelector('button[aria-label="LLM provider switcher"]');
+                samples.provider_modal_open_ms.push(
+                    await measure(providerButton, () => exactLeafText("LLM provider"), "provider modal open")
+                );
+                samples.provider_modal_close_ms.push(
+                    await measure(buttonByText("Cancel"), () => !exactLeafText("LLM provider"), "provider modal close")
+                );
+            }
+
+            for (let i = 0; i < 2; i += 1) {
+                samples.workspace_switch_ms.push(
+                    await measure(
+                        buttonByText("Repository Audit"),
+                        () => exactLeafText("Local repository audit"),
+                        "repository audit workspace"
+                    )
+                );
+                samples.workspace_switch_ms.push(
+                    await measure(
+                        buttonByText("Spec Builder"),
+                        () => exactLeafText("Requirements draft"),
+                        "spec builder workspace"
+                    )
+                );
+            }
+
+            const all = Object.values(samples).flat();
+            return {
+                threshold_ms: thresholdMs,
+                max_ms: Math.max(...all),
+                sample_count: all.length,
+                samples,
+                measurement_boundary:
+                    "DOM state transition observed in Chromium plus one subsequent requestAnimationFrame; Playwright transport excluded.",
+            };
+        }"""
+    )
+
+
 def main() -> None:
     home = Path(tempfile.mkdtemp(prefix="dspec-browser-"))
     env = os.environ.copy()
@@ -84,6 +175,18 @@ def main() -> None:
                 }""")
                 print("BROWSER_SESSIONS_PROBE", json.dumps(sessions_probe), flush=True)
                 raise
+
+            # Let the dynamically loaded editor settle before measuring normal
+            # in-app interactions. NFR-1.1 concerns client-side interaction
+            # responsiveness, not initial application/lazy-module startup.
+            expect(page.locator(".monaco-editor")).to_be_visible(timeout=15_000)
+            ui_latency = measure_ui_latency(page)
+            print("BROWSER_UI_LATENCY", json.dumps(ui_latency, sort_keys=True), flush=True)
+            if float(ui_latency["max_ms"]) > float(ui_latency["threshold_ms"]):
+                raise AssertionError(
+                    f"NFR-1.1 failed: max client render latency {ui_latency['max_ms']:.3f} ms "
+                    f"> {ui_latency['threshold_ms']} ms"
+                )
 
             page.get_by_role("button", name="Requirements").click()
             expect(page.get_by_text("Requirements draft", exact=True)).to_be_visible()
