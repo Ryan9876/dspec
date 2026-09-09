@@ -8,11 +8,17 @@ import subprocess
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 STAGE = DIST / "package"
-VERSION = "0.1.0"
+MINIMUM_RUNNER_VERSION = "0.1.1"
+
+
+def project_version() -> str:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return str(data["project"]["version"]).strip().lstrip("v")
 
 
 def current_commit() -> str:
@@ -29,6 +35,7 @@ def main() -> None:
 
     commit = current_commit()
     built_at = datetime.now(UTC).isoformat()
+    version = project_version()
 
     if STAGE.exists():
         shutil.rmtree(STAGE)
@@ -44,14 +51,14 @@ def main() -> None:
         shutil.copy2(ROOT / name, STAGE / name)
 
     build_info = {
-        "version": VERSION,
+        "version": version,
         "build_hash": commit,
         "built_at": built_at,
         "source_repository": "Ryan9876/dspec",
     }
     (STAGE / "build-info.json").write_text(json.dumps(build_info, indent=2) + "\n", encoding="utf-8")
 
-    package_name = f"dspec-build-v{VERSION}.zip"
+    package_name = f"DSpec-v{version}.zip"
     package_path = DIST / package_name
     if package_path.exists():
         package_path.unlink()
@@ -62,14 +69,14 @@ def main() -> None:
 
     digest = hashlib.sha256(package_path.read_bytes()).hexdigest()
     manifest = {
-        "release_version": f"v{VERSION}",
+        "release_version": version,
         "release_date": built_at,
         "build_hash": commit,
-        "minimum_runner_version": "0.1.0",
+        "minimum_runner_version": MINIMUM_RUNNER_VERSION,
         "package_filename": package_name,
         "sha256": digest,
         "validation_state": "candidate",
-        "release_notes": "DS-CHG-001 local working prototype candidate. Candidate status does not authorize runner auto-update.",
+        "release_notes": "DS-CHG-001 validation candidate. Candidate status does not authorize runner auto-update.",
     }
     (DIST / "candidate-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(manifest, indent=2))
