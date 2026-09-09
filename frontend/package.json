@@ -6,8 +6,8 @@
     "dev": "next dev -H 127.0.0.1 -p 3211",
     "build": "next build",
     "typecheck": "tsc --noEmit",
-    "predev": "node scripts/copy-monaco.mjs",
-    "prebuild": "node scripts/copy-monaco.mjs"
+    "predev": "mkdir -p public/monaco && cp -R node_modules/monaco-editor/min/vs public/monaco/",
+    "prebuild": "mkdir -p public/monaco && cp -R node_modules/monaco-editor/min/vs public/monaco/"
   },
   "dependencies": {
     "@monaco-editor/react": "4.7.0",
