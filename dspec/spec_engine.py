@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, AsyncIterator
 
 from . import db
 from .dspy_signatures import (
@@ -20,6 +20,7 @@ from .optimization_store import load_promoted_state
 from .provider import ProviderGateway
 from .provider_selection import selected_for_inference
 from .quality import evaluate
+from .streaming import StageFieldStreamParser, provider_chunk_text
 
 _OUTPUT_FIELDS = {
     "constitution": "constitution_spec",
@@ -163,20 +164,27 @@ class SpecEngine:
             "solution_spec": specs.get("solution", {}).get("content", "Solution not yet drafted."),
         }
 
-    async def generate(self, session: dict[str, Any], stage: str, instructions: str | None = None) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    def _generation_program(
+        self,
+        stage: str,
+        selected: dict[str, str],
+    ) -> tuple[Any, Any, str, dict[str, Any] | None]:
         if stage not in _SIGNATURES or _SIGNATURES[stage] is None:
             raise ValueError("Unsupported or unavailable DSpec stage.")
+
         import dspy
 
-        selected = await selected_for_inference(self.gateway)
         lm = self._lm(selected)
         signature = _SIGNATURES[stage]
         output_field = _OUTPUT_FIELDS[stage]
-        base = dspy.ChainOfThought(signature)
+
+        # Stage signatures already define the structured outputs DSpec needs.
+        # Adding ChainOfThought inserts a separate reasoning field before the
+        # user-visible spec and materially delays useful streamed content.
+        base = dspy.Predict(signature)
         promoted = load_promoted_state(base, stage)
-        # Saved DSPy state can include the LM that was used during compilation.
-        # Runtime provider selection remains authoritative, so always rebind the
-        # loaded program to the currently selected LM before inference.
+        # Saved DSPy state can include the LM used during compilation. Runtime
+        # provider selection remains authoritative.
         base.set_lm(lm)
 
         def reward(_args: dict[str, Any], pred: dspy.Prediction) -> float:
@@ -189,10 +197,19 @@ class SpecEngine:
             return min(structural_score, semantic_score)
 
         program = dspy.Refine(module=base, N=3, reward_fn=reward, threshold=0.90, fail_count=2)
-        started = time.perf_counter()
-        with dspy.context(lm=lm):
-            result = await dspy.asyncify(program)(**self._inputs(session, stage, instructions))
-        latency_ms = int((time.perf_counter() - started) * 1000)
+        return lm, program, output_field, promoted
+
+    @staticmethod
+    def _generation_result(
+        *,
+        stage: str,
+        selected: dict[str, str],
+        output_field: str,
+        promoted: dict[str, Any] | None,
+        result: Any,
+        latency_ms: int,
+        first_provisional_chunk_ms: int | None = None,
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
         content = str(getattr(result, output_field, "") or "").strip()
         if not content:
             raise RuntimeError("DSPy returned an empty specification.")
@@ -221,6 +238,7 @@ class SpecEngine:
             }
             must_fix.append(semantic_fix)
             recommendations.append(semantic_fix["recommendation"])
+
         review = {
             **structural,
             "score": combined_score,
@@ -242,9 +260,111 @@ class SpecEngine:
             "inference_latency_ms": latency_ms,
             "tokens_generated": None,
             "tokens_per_second": None,
-            "measurement_scope": "request latency measured locally; provider token accounting not asserted",
+            "first_provisional_chunk_ms": first_provisional_chunk_ms,
+            "measurement_scope": (
+                "request latency measured locally; first_provisional_chunk_ms is the first provider-backed "
+                "stage-content chunk when observed; provider token accounting not asserted"
+            ),
         }
         return content, metrics, review
+
+    async def generate(
+        self,
+        session: dict[str, Any],
+        stage: str,
+        instructions: str | None = None,
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        import dspy
+
+        selected = await selected_for_inference(self.gateway)
+        lm, program, output_field, promoted = self._generation_program(stage, selected)
+        started = time.perf_counter()
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(**self._inputs(session, stage, instructions))
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return self._generation_result(
+            stage=stage,
+            selected=selected,
+            output_field=output_field,
+            promoted=promoted,
+            result=result,
+            latency_ms=latency_ms,
+        )
+
+    async def generate_stream(
+        self,
+        session: dict[str, Any],
+        stage: str,
+        instructions: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream provisional stage content while preserving Refine authority.
+
+        Raw DSPy/provider chunks may contain reasoning, quality assessment, and
+        Refine feedback. Only the active stage specification field is emitted.
+        The final event contains the authoritative Refine-selected prediction;
+        callers must persist only that final result.
+        """
+
+        import dspy
+
+        selected = await selected_for_inference(self.gateway)
+        lm, program, output_field, promoted = self._generation_program(stage, selected)
+        parser = StageFieldStreamParser(output_field)
+        started = time.perf_counter()
+        first_chunk_ms: int | None = None
+        final_prediction: Any | None = None
+
+        with dspy.context(lm=lm):
+            streamer = dspy.streamify(program)
+            async for value in streamer(**self._inputs(session, stage, instructions)):
+                streamed_text = provider_chunk_text(value)
+                if streamed_text is not None:
+                    for item in parser.feed(streamed_text):
+                        payload: dict[str, Any] = {
+                            "event": item.event,
+                            "attempt": item.attempt,
+                            "provisional": True,
+                        }
+                        if item.text is not None:
+                            payload["text"] = item.text
+                            if first_chunk_ms is None and item.text:
+                                first_chunk_ms = int((time.perf_counter() - started) * 1000)
+                        yield payload
+                    continue
+                if isinstance(value, dspy.Prediction):
+                    final_prediction = value
+
+        for item in parser.finalize():
+            payload = {
+                "event": item.event,
+                "attempt": item.attempt,
+                "provisional": True,
+            }
+            if item.text is not None:
+                payload["text"] = item.text
+                if first_chunk_ms is None and item.text:
+                    first_chunk_ms = int((time.perf_counter() - started) * 1000)
+            yield payload
+
+        if final_prediction is None:
+            raise RuntimeError("DSPy streaming completed without a final prediction.")
+
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        content, metrics, review = self._generation_result(
+            stage=stage,
+            selected=selected,
+            output_field=output_field,
+            promoted=promoted,
+            result=final_prediction,
+            latency_ms=latency_ms,
+            first_provisional_chunk_ms=first_chunk_ms,
+        )
+        yield {
+            "event": "final",
+            "content": content,
+            "metrics": metrics,
+            "review": review,
+        }
 
 
     async def revise(
