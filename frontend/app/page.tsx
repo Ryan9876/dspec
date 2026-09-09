@@ -90,6 +90,8 @@ export default function Home(){
   const [error,setError]=useState<string|null>(null);
   const [draft,setDraft]=useState("");
   const [streamText,setStreamText]=useState("");
+  const [streamAttempt,setStreamAttempt]=useState<number|null>(null);
+  const [streamProvisional,setStreamProvisional]=useState(false);
   const [review,setReview]=useState<Review>({});
   const saveTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
 
@@ -170,8 +172,8 @@ export default function Home(){
 
   async function generate(){
     if(!session)return;
-    setBusy("Generating"); setError(null); setRecovery(null); setStreamText("");
-    let output=""; let lastSeq=0; let attempt=0; let initial=true; let terminal=false; let providerFailure=false;
+    setBusy("Generating"); setError(null); setRecovery(null); setStreamText(""); setStreamAttempt(null); setStreamProvisional(false);
+    let output=""; let lastSeq=0; let reconnectAttempt=0; let initial=true; let terminal=false; let providerFailure=false;
     const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
     try{
       while(!terminal){
@@ -199,7 +201,29 @@ export default function Home(){
               if(!dataLine)continue;
               const data=JSON.parse(dataLine.slice(5));
               if(typeof data.seq==="number")lastSeq=Math.max(lastSeq,data.seq);
-              if(event==="token"){output+=data.text??"";setStreamText(output);}
+
+              if(event==="candidate_start"){
+                const candidate=typeof data.attempt==="number"?data.attempt:null;
+                output="";
+                setStreamText("");
+                setStreamAttempt(candidate);
+                setStreamProvisional(true);
+                setBusy(candidate?`Generating candidate ${candidate}`:"Generating candidate");
+              }
+              if(event==="token"){
+                output+=data.text??"";
+                setStreamText(output);
+              }
+              if(event==="candidate_end"){
+                const candidate=typeof data.attempt==="number"?data.attempt:streamAttempt;
+                setBusy(candidate?`Evaluating candidate ${candidate}`:"Evaluating candidate");
+              }
+              if(event==="candidate_selected"){
+                output=String(data.content??"");
+                setStreamText(output);
+                setStreamProvisional(false);
+                setBusy("Finalizing selected draft");
+              }
               if(event==="complete"){terminal=true;break;}
               if(event==="error"){
                 providerFailure=true;terminal=true;
@@ -221,16 +245,24 @@ export default function Home(){
           if(!terminal)throw new Error("Generation stream disconnected before completion.");
         }catch(e){
           if(providerFailure||terminal)throw e;
-          if(attempt>=5)throw e;
-          attempt+=1;
-          setBusy(`Reconnecting stream (${attempt}/5)`);
-          await sleep(Math.min(500*Math.pow(1.5,attempt-1),5000));
+          if(reconnectAttempt>=5)throw e;
+          reconnectAttempt+=1;
+          setBusy(`Reconnecting stream (${reconnectAttempt}/5)`);
+          await sleep(Math.min(500*Math.pow(1.5,reconnectAttempt-1),5000));
           initial=false;
           continue;
         }
       }
-      await loadSession(session.id); setStreamText("");
-    }catch(e){setError(String(e));}finally{setBusy(null);}
+      await loadSession(session.id);
+      setStreamText("");
+      setStreamAttempt(null);
+      setStreamProvisional(false);
+    }catch(e){
+      setStreamText("");
+      setStreamAttempt(null);
+      setStreamProvisional(false);
+      setError(String(e));
+    }finally{setBusy(null);}
   }
 
   async function reviewNow(){
@@ -368,7 +400,12 @@ export default function Home(){
                     <button className="btn btn-primary flex items-center gap-1.5" onClick={()=>void generate()} disabled={!!busy}><Sparkles className="h-4 w-4"/>{current?"Regenerate":"Generate"}</button>
                   </div>
                 </div>
-                {busy==="Generating"&&streamText?<pre className="max-h-[620px] min-h-[520px] overflow-auto whitespace-pre-wrap p-5 font-mono text-sm leading-6 text-slate-200">{streamText}</pre>:
+                {busy&&streamText&&(busy.startsWith("Generating")||busy.startsWith("Evaluating")||busy.startsWith("Reconnecting")||busy.startsWith("Finalizing"))?<div>
+                  <div className={`border-b px-4 py-2 text-xs ${streamProvisional?"border-amber-500/20 bg-amber-500/10 text-amber-200":"border-emerald-500/20 bg-emerald-500/10 text-emerald-200"}`}>
+                    {streamProvisional?`Provisional candidate${streamAttempt?` ${streamAttempt}`:""} — DSpec is still evaluating and refining this text. It is not saved or approved yet.`:"Final Refine-selected draft — saving authoritative result."}
+                  </div>
+                  <pre className="max-h-[580px] min-h-[480px] overflow-auto whitespace-pre-wrap p-5 font-mono text-sm leading-6 text-slate-200">{streamText}</pre>
+                </div>:
                 <Editor height="620px" language="markdown" theme="vs-dark" value={draft} onChange={draftChanged} options={{minimap:{enabled:false},wordWrap:"on",fontSize:14,lineHeight:22,padding:{top:18},scrollBeyondLastLine:false,automaticLayout:true}}/>}
               </section>
             </div>
