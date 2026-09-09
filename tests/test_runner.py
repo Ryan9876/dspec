@@ -109,3 +109,59 @@ def test_release_rollback_restores_prior_runtime(release_home: Path, tmp_path: P
     assert active_info["version"] == "0.1.2"
     marker = json.loads((release_home / "runtime" / "active-release.json").read_text())
     assert marker["version"] == "0.1.2"
+
+
+def test_older_validated_release_does_not_downgrade_active_runtime(
+    release_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    newer = write_release(tmp_path / "drive-newer", version="0.1.3", build="build-newer")
+    monkeypatch.setenv("DSPEC_RELEASE_MANIFEST", str(newer))
+    assert runner._verify_and_apply_release()["status"] == "release_applied"
+
+    older = write_release(tmp_path / "drive-older", version="0.1.2", build="build-older")
+    monkeypatch.setenv("DSPEC_RELEASE_MANIFEST", str(older))
+    result = runner._verify_and_apply_release()
+
+    assert result == {
+        "status": "release_older_than_current",
+        "release_version": "0.1.2",
+        "current_version": "0.1.3",
+    }
+    active_info = json.loads((release_home / "runtime" / "app" / "build-info.json").read_text())
+    assert active_info["version"] == "0.1.3"
+    assert active_info["build_hash"] == "build-newer"
+
+
+def test_same_version_cannot_silently_change_bytes(
+    release_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    first = write_release(tmp_path / "drive-first", version="0.1.2", build="build-one")
+    monkeypatch.setenv("DSPEC_RELEASE_MANIFEST", str(first))
+    assert runner._verify_and_apply_release()["status"] == "release_applied"
+
+    replacement = write_release(tmp_path / "drive-replacement", version="0.1.2", build="build-two")
+    monkeypatch.setenv("DSPEC_RELEASE_MANIFEST", str(replacement))
+
+    with pytest.raises(RuntimeError, match="package identity differs"):
+        runner._verify_and_apply_release()
+
+    active_info = json.loads((release_home / "runtime" / "app" / "build-info.json").read_text())
+    assert active_info["build_hash"] == "build-one"
+
+
+def test_manifest_package_name_must_match_simple_release_version(
+    release_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    manifest = write_release(tmp_path / "drive", version="0.1.2", build="build-one")
+    data = json.loads(manifest.read_text())
+    original = manifest.parent / data["package_filename"]
+    renamed = manifest.parent / "opaque-build-name.zip"
+    original.rename(renamed)
+    data["package_filename"] = renamed.name
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setenv("DSPEC_RELEASE_MANIFEST", str(manifest))
+
+    with pytest.raises(RuntimeError, match="does not match governed version"):
+        runner._verify_and_apply_release()
+
+    assert not (release_home / "runtime" / "app").exists()
