@@ -308,7 +308,7 @@ export default function Home(){
       <div className="mx-auto flex max-w-[1540px] items-center gap-4 px-5 py-3">
         <div className="flex items-center gap-3">
           <div className="grid h-9 w-9 place-items-center rounded-xl border border-indigo-400/40 bg-indigo-500/15 shadow-[0_0_22px_rgba(99,102,241,.2)]"><ShieldCheck className="h-5 w-5 text-indigo-300"/></div>
-          <div><div className="font-semibold tracking-wide">DSpec AI</div><div className="text-xs text-slate-500">spec-first delivery workspace</div></div>
+          <div><div className="flex items-center gap-2"><div className="font-semibold tracking-wide">DSpec AI</div>{health&&<span className="text-[10px] font-medium text-slate-500">v{health.version}</span>}</div><div className="text-xs text-slate-500">spec-first delivery workspace</div></div>
         </div>
         <div className="ml-auto flex items-center gap-2">
           <button className="badge bg-slate-950/60" aria-label="LLM provider switcher" onClick={()=>setProviderOpen(true)}>
