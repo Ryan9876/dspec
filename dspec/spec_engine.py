@@ -150,6 +150,75 @@ class SpecEngine:
         return content, metrics, review
 
 
+    async def revise(
+        self,
+        session: dict[str, Any],
+        stage: str,
+        content: str,
+        instruction: str,
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        if ReviseSpec is None:
+            raise RuntimeError("DSPy review revision signature is unavailable.")
+        current = content.strip()
+        review_instruction = instruction.strip()
+        if not current:
+            raise ValueError("Current specification content is required.")
+        if not review_instruction:
+            raise ValueError("A review instruction is required.")
+
+        import dspy
+
+        selected = self.gateway.selected()
+        lm = self._lm(selected)
+        base = dspy.ChainOfThought(ReviseSpec)
+        base.set_lm(lm)
+
+        def reward(_args: dict[str, Any], pred: dspy.Prediction) -> float:
+            revised = str(getattr(pred, "revised_spec", "") or "")
+            return float(evaluate(stage, revised)["score"])
+
+        program = dspy.Refine(module=base, N=3, reward_fn=reward, threshold=0.90, fail_count=2)
+        started = time.perf_counter()
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(
+                stage=stage,
+                prior_tiers=self._prior(session, stage),
+                current_spec=current,
+                review_instruction=review_instruction,
+            )
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        revised = str(getattr(result, "revised_spec", "") or "").strip()
+        if not revised:
+            raise RuntimeError("DSPy returned an empty revised specification.")
+
+        semantic = getattr(result, "quality_assessment", None)
+        if hasattr(semantic, "model_dump"):
+            semantic_data = semantic.model_dump()
+        elif isinstance(semantic, dict):
+            semantic_data = semantic
+        else:
+            semantic_data = {"reported": False}
+
+        review = {
+            **evaluate(stage, revised),
+            "semantic_assessment": semantic_data,
+            "revision_application": {
+                "instruction": review_instruction,
+                "scope": "single_review_instruction",
+                "formal_revision_created": False,
+            },
+        }
+        metrics = {
+            "provider": selected["provider"],
+            "model": selected["model"],
+            "inference_latency_ms": latency_ms,
+            "tokens_generated": None,
+            "tokens_per_second": None,
+            "measurement_scope": "request latency measured locally; provider token accounting not asserted",
+        }
+        return revised, metrics, review
+
+
     async def semantic_review(self, session: dict[str, Any], stage: str, content: str) -> dict[str, Any]:
         structural = evaluate(stage, content)
         if SemanticSpecReview is None:

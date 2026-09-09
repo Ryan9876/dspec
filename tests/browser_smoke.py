@@ -101,6 +101,32 @@ def main() -> None:
             page.get_by_role("button", name="Requirements").click()
             expect(page.get_by_text("Requirements draft", exact=True)).to_be_visible()
 
+            review_fixture = """# Requirements Definition
+
+## User workflow
+The user can create a governed project, move through each specification stage, and save draft progress without losing prior-stage context.
+
+## Acceptance criteria
+The application must preserve saved specification content across browser refresh and must make review status visible before approval.
+"""
+            save_probe = page.evaluate(
+                """async ({content}) => {
+                    const sessionsResponse = await fetch('/api/sessions');
+                    const sessions = await sessionsResponse.json();
+                    const session = sessions.find(item => item.bundle_name === 'browser-e2e');
+                    if (!session) return {status: 404, body: 'session missing'};
+                    const response = await fetch('/api/spec/save', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({session_id: session.id, stage: 'requirements', content}),
+                    });
+                    return {status: response.status, body: await response.json(), session_id: session.id};
+                }""",
+                {"content": review_fixture},
+            )
+            print("BROWSER_REVIEW_FIXTURE_SAVE", json.dumps(save_probe), flush=True)
+            assert save_probe["status"] == 200, save_probe
+
             page.get_by_role("button", name="LLM provider switcher").click()
             expect(page.get_by_text("LLM provider", exact=True)).to_be_visible()
             page.get_by_role("button", name="Cancel").click()
@@ -115,7 +141,61 @@ def main() -> None:
             page.reload(wait_until="domcontentloaded")
             expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible(timeout=10_000)
             expect(page.get_by_text("DSpec AI", exact=True)).to_be_visible()
+            page.get_by_role("button", name="Requirements").click()
             expect(page.locator(".monaco-editor")).to_be_visible(timeout=15_000)
+
+            expect(page.get_by_text("Passing assertions", exact=True)).to_be_visible()
+            expect(page.get_by_text("Must fix", exact=True)).to_be_visible()
+            expect(page.get_by_text("Actionable recommendations", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="Apply fix").first).to_be_visible()
+            expect(page.get_by_role("button", name="Apply recommendation").first).to_be_visible()
+
+            revision_requests: list[dict[str, object]] = []
+
+            def fulfill_revision(route) -> None:
+                request_body = json.loads(route.request.post_data or "{}")
+                revision_requests.append(request_body)
+                revised = str(request_body.get("content") or "") + (
+                    "\n\n## Recovery behavior\n"
+                    "Invalid input produces an explicit validation response and preserves the user's saved draft."
+                )
+                route.fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body=json.dumps({
+                        "content": revised,
+                        "review": {
+                            "score": 0.95,
+                            "threshold": 0.90,
+                            "passed": True,
+                            "passing": [{
+                                "id": "applied-correction",
+                                "label": "Applied correction",
+                                "detail": "The selected review instruction was applied to the draft buffer.",
+                            }],
+                            "must_fix": [],
+                            "recommendations": [],
+                        },
+                        "metrics": {
+                            "provider": "fixture",
+                            "model": "fixture",
+                            "inference_latency_ms": 1,
+                        },
+                        "draft": {
+                            "content": revised,
+                            "updated_at": "2026-09-09T00:00:00Z",
+                        },
+                        "formal_revision_created": False,
+                    }),
+                )
+
+            page.route("**/api/spec/revise", fulfill_revision)
+            page.get_by_role("button", name="Apply fix").first.click()
+            expect(page.get_by_text("Applied correction", exact=True)).to_be_visible()
+            assert revision_requests, "Review apply action did not call /api/spec/revise"
+            assert revision_requests[0].get("stage") == "requirements"
+            assert revision_requests[0].get("instruction") == "Add error and edge-case behavior."
+            print("BROWSER_REVIEW_APPLY", json.dumps(revision_requests[0]), flush=True)
 
             SCREENSHOT.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(SCREENSHOT), full_page=True)
