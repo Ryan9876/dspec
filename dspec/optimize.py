@@ -257,7 +257,9 @@ def compile_candidate(args: argparse.Namespace) -> dict[str, Any]:
 
     trainset, valset = _to_dspy_examples(bundle)
     lm = make_lm(args.provider, args.model)
-    base = dspy.ChainOfThought(SIGNATURES[args.stage])
+    # Runtime stage generation uses the explicit Signature outputs directly.
+    # Keep optimizer compilation structurally compatible with that runtime.
+    base = dspy.Predict(SIGNATURES[args.stage])
     marker_map = {
         tuple(item.inputs[key] for key in STAGE_INPUTS[args.stage]): item.required_markers
         for item in (*bundle.train, *bundle.validation)
