@@ -147,9 +147,13 @@ The application must preserve saved specification content across browser refresh
             key_input = page.locator('input[type="password"]')
             expect(key_input).to_be_visible()
             key_input.fill("short")
+            expected_console_start = len(console_errors)
             page.get_by_role("button", name="Apply provider").click()
             expect(page.get_by_text("Provider settings could not be saved.", exact=False)).to_be_visible()
             expect(key_input).to_have_value("")
+            expected_console = console_errors[expected_console_start:]
+            assert expected_console == ["Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"], expected_console
+            del console_errors[expected_console_start:]
             page.get_by_role("button", name="Cancel").click()
 
             page.get_by_role("button", name="Repository Audit").click()
