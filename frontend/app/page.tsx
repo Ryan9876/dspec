@@ -426,7 +426,7 @@ function ProviderModal({health,onClose,onChanged}:{health:Health|null;onClose:()
   async function save(){
     try{await api("/api/provider/select",{method:"POST",body:JSON.stringify({provider,model,api_key:key||null})});setKey("");await onChanged();}catch(e){setErr(String(e));}
   }
-  return <div className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-4 backdrop-blur-sm" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
+  return <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}>
     <div className="panel w-full max-w-lg p-5 shadow-2xl">
       <div className="mb-4"><div className="text-lg font-semibold">LLM provider</div><div className="text-xs text-slate-500">Changes apply to subsequent generation calls without restarting DSpec.</div></div>
       <label className="mb-3 block text-xs text-slate-400">Provider<select className="input mt-1" value={provider} onChange={e=>setProvider(e.target.value)}><option value="lm_studio">LM Studio</option><option value="ollama">Ollama</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
