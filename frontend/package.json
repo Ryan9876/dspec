@@ -1,7 +1,7 @@
 {
   "name": "dspec-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "scripts": {
     "dev": "next dev -H 127.0.0.1 -p 3211",
     "build": "next build",
