@@ -201,25 +201,49 @@ def test_repository_audit_is_bounded_and_actionable(client: TestClient, tmp_path
     assert body["assessment_scope"].startswith("Bounded static file evidence")
 
 
-def test_stream_generation_preserves_contract(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+def test_stream_generation_preserves_contract_and_persists_only_final_selection(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
     sid = create_session(client, "stream-test")
+    provisional = "# Provisional requirements\n\nThis content must never become the formal draft."
 
-    async def fake_generate(session, stage, instructions=None):
+    async def fake_generate_stream(session, stage, instructions=None):
         review = evaluate(stage, DRAFTS[stage])
-        return DRAFTS[stage], {
-            "provider": "fixture", "model": "fixture", "inference_latency_ms": 1,
-            "tokens_generated": None, "tokens_per_second": None,
-        }, review
+        yield {"event": "candidate_start", "attempt": 1, "provisional": True}
+        yield {"event": "token", "attempt": 1, "provisional": True, "text": provisional}
+        yield {"event": "candidate_end", "attempt": 1, "provisional": True}
+        yield {
+            "event": "final",
+            "content": DRAFTS[stage],
+            "metrics": {
+                "provider": "fixture",
+                "model": "fixture",
+                "inference_latency_ms": 12,
+                "first_provisional_chunk_ms": 3,
+                "tokens_generated": None,
+                "tokens_per_second": None,
+            },
+            "review": review,
+        }
 
-    monkeypatch.setattr(engine, "generate", fake_generate)
+    monkeypatch.setattr(engine, "generate_stream", fake_generate_stream)
     with client.stream("POST", "/api/spec/stream", json={"session_id": sid, "stage": "requirements"}) as r:
         assert r.status_code == 200
         text = "".join(r.iter_text())
+
+    assert "event: candidate_start" in text
     assert "event: token" in text
+    assert '"provisional":true' in text
+    assert "event: candidate_selected" in text
+    assert '"provisional":false' in text
     assert "event: complete" in text
     assert "event: assertion_check" in text
+    assert '"first_provisional_chunk_ms":3' in text
+
     session = client.get(f"/api/sessions/{sid}").json()
     assert session["specs"]["requirements"]["content"] == DRAFTS["requirements"]
+    assert provisional not in session["specs"]["requirements"]["content"]
 
 
 def test_stream_generation_failure_preserves_saved_state_and_offers_fallback(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -234,10 +258,12 @@ def test_stream_generation_failure_preserves_saved_state_and_offers_fallback(cli
         "free_text_payload": "preserve this recovery context",
     }).status_code == 200
 
-    async def failed_generate(session, stage, instructions=None):
+    async def failed_generate_stream(session, stage, instructions=None):
+        if False:
+            yield {}
         raise RuntimeError("LM Studio unavailable")
 
-    monkeypatch.setattr(engine, "generate", failed_generate)
+    monkeypatch.setattr(engine, "generate_stream", failed_generate_stream)
     with client.stream("POST", "/api/spec/stream", json={"session_id": sid, "stage": "constitution"}) as r:
         assert r.status_code == 200
         text = "".join(r.iter_text())
@@ -249,6 +275,47 @@ def test_stream_generation_failure_preserves_saved_state_and_offers_fallback(cli
     assert session["drafts"]["constitution"]["content"] == draft
     answer = next(item for item in session["answers"] if item["question_id"] == "assistant-constitution")
     assert answer["free_text_payload"] == "preserve this recovery context"
+
+
+def test_stream_context_change_rejects_final_persistence_after_provisional_output(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sid = create_session(client, "stream-conflict")
+
+    async def fake_generate_stream(session, stage, instructions=None):
+        review = evaluate(stage, DRAFTS[stage])
+        yield {"event": "candidate_start", "attempt": 1, "provisional": True}
+        yield {"event": "token", "attempt": 1, "provisional": True, "text": "# provisional"}
+        db.save_answer(
+            sid,
+            stage,
+            "changed-during-generation",
+            "changed",
+            "This changes the review/generation context.",
+        )
+        yield {
+            "event": "final",
+            "content": DRAFTS[stage],
+            "metrics": {
+                "provider": "fixture",
+                "model": "fixture",
+                "inference_latency_ms": 20,
+                "first_provisional_chunk_ms": 2,
+            },
+            "review": review,
+        }
+
+    monkeypatch.setattr(engine, "generate_stream", fake_generate_stream)
+    with client.stream("POST", "/api/spec/stream", json={"session_id": sid, "stage": "requirements"}) as r:
+        assert r.status_code == 200
+        text = "".join(r.iter_text())
+
+    assert "event: token" in text
+    assert "event: error" in text
+    assert "event: candidate_selected" not in text
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert "requirements" not in session["specs"]
 
 
 def test_dspy_discovery_endpoint_returns_structured_mcq(client: TestClient, monkeypatch: pytest.MonkeyPatch):
