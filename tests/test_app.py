@@ -130,6 +130,35 @@ def test_approval_rejects_placeholder(client: TestClient):
     assert result.status_code == 409
 
 
+def test_ac2_solution_missing_error_contract_fails_quality_gate(client: TestClient):
+    sid = create_session(client, "missing-error-contract")
+    missing_errors = """# Solution
+
+## Components and API
+The FastAPI service exposes POST /api/projects and GET /api/projects/{project_id}. Requests use typed Pydantic interfaces.
+
+## Typed schema
+projects.id UUID PRIMARY KEY. projects.name TEXT NOT NULL. project_events.project_id UUID references projects.id with an index on project_id.
+
+## State
+Project writes are transactional and persisted in SQLite. Components have explicit interfaces and schemas.
+"""
+    saved = client.post(
+        "/api/spec/save",
+        json={"session_id": sid, "stage": "solution", "content": missing_errors},
+    )
+    assert saved.status_code == 200
+    review = saved.json()["review"]
+    assert review["passed"] is False
+    assert any(item["id"] == "errors" for item in review["must_fix"])
+
+    approval = client.post("/api/spec/approve", json={"session_id": sid, "stage": "solution"})
+    assert approval.status_code == 409
+    body = approval.json()["detail"]
+    assert body["error"] == "quality_gate_failed"
+    assert any(item["id"] == "errors" for item in body["review"]["must_fix"])
+
+
 def test_answers_persist_on_readback(client: TestClient):
     sid = create_session(client, "answer-persist")
     saved = client.post("/api/answers", json={
@@ -156,7 +185,18 @@ def test_repository_audit_is_bounded_and_actionable(client: TestClient, tmp_path
     assert r.status_code == 200
     body = r.json()
     assert body["total_files_scanned"] == 5
+    expected_dimensions = {
+        "governance_security_score",
+        "requirements_clarity_score",
+        "architecture_consistency_score",
+        "test_task_coverage_score",
+    }
+    assert expected_dimensions <= set(body["health_score"])
+    assert all(0 <= body["health_score"][key] <= 100 for key in expected_dimensions)
     assert 0 <= body["health_score"]["composite_score"] <= 100
+    assert body["scan_duration_ms"] <= 10_000
+    assert body["structural_diff_md"]
+    assert body["upgrade_spec_md"]
     assert body["assessment_scope"].startswith("Bounded static file evidence")
 
 
@@ -260,6 +300,76 @@ def test_1000_file_audit_index_target(client: TestClient, tmp_path: Path):
     assert body["scan_duration_ms"] <= 3000
     assert body["limits"]["truncated"] is False
     assert "upgrade_spec_md" in body
+
+
+def test_ac5_provider_switch_routes_subsequent_generation_without_restart(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sid = create_session(client, "provider-switch")
+    client.post(
+        "/api/answers",
+        json={
+            "session_id": sid,
+            "stage": "requirements",
+            "question_id": "preserve",
+            "selected_option_id": "yes",
+            "free_text_payload": "keep this state across provider switches",
+        },
+    )
+
+    routed_calls: list[tuple[str, str]] = []
+
+    async def routed_generate(session, stage, instructions=None):
+        selected = engine.gateway.selected()
+        routed_calls.append((selected["provider"], selected["model"]))
+        review = evaluate(stage, DRAFTS[stage])
+        return DRAFTS[stage], {
+            "provider": selected["provider"],
+            "model": selected["model"],
+            "inference_latency_ms": 1,
+            "tokens_generated": None,
+            "tokens_per_second": None,
+        }, review
+
+    monkeypatch.setattr(engine, "generate", routed_generate)
+
+    local_select = client.post(
+        "/api/provider/select",
+        json={"provider": "lm_studio", "model": "local-validation-model"},
+    )
+    assert local_select.status_code == 200
+    first = client.post(
+        "/api/spec/generate",
+        json={"session_id": sid, "stage": "requirements"},
+    )
+    assert first.status_code == 200
+    assert first.json()["metrics"]["provider"] == "lm_studio"
+    assert first.json()["metrics"]["model"] == "local-validation-model"
+
+    cloud_select = client.post(
+        "/api/provider/select",
+        json={"provider": "openai", "model": "cloud-validation-model"},
+    )
+    assert cloud_select.status_code == 200
+    second = client.post(
+        "/api/spec/generate",
+        json={"session_id": sid, "stage": "requirements"},
+    )
+    assert second.status_code == 200
+    assert second.json()["metrics"]["provider"] == "openai"
+    assert second.json()["metrics"]["model"] == "cloud-validation-model"
+
+    assert routed_calls == [
+        ("lm_studio", "local-validation-model"),
+        ("openai", "cloud-validation-model"),
+    ]
+
+    persisted = client.get(f"/api/sessions/{sid}")
+    assert persisted.status_code == 200
+    session = persisted.json()
+    assert session["answers"][0]["free_text_payload"] == "keep this state across provider switches"
+    assert session["specs"]["requirements"]["revision_number"] == 2
 
 
 def test_provider_secret_is_not_echoed_in_validation_or_response(client: TestClient, monkeypatch: pytest.MonkeyPatch):
