@@ -15,6 +15,13 @@ QUALITY = {
 }
 
 
+@pytest.fixture(autouse=True)
+def isolate_live_provider_readiness(monkeypatch):
+    async def selected(gateway):
+        return gateway.selected()
+    monkeypatch.setattr("dspec.spec_engine.selected_for_inference", selected)
+
+
 def use_review(monkeypatch, **changes):
     result = {"score": 0.97, "must_fix": [], "recommendations": [], "consistency_issues": [], **changes}
     lm = DummyLM([{"review": json.dumps(result)}] * 20)
