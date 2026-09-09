@@ -40,6 +40,7 @@ def main() -> None:
                 active = health.get("active_provider", {})
                 message = (
                     f"DSpec: healthy\n"
+                    f"Version: {health.get('version', 'unknown')}\n"
                     f"Port: {health.get('port', PORT)}\n"
                     f"Provider: {active.get('provider') or active.get('name', 'unknown')}\n"
                     f"Model: {active.get('model', 'unknown')}"
