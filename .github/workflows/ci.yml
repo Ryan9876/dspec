@@ -65,7 +65,17 @@ jobs:
           npm install
           npm run build
       - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if python -m playwright install --with-deps chromium; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
       - name: Browser workflow smoke
         env:
           DSPEC_BROWSER_SCREENSHOT: evidence/browser-smoke.png
@@ -102,7 +112,17 @@ jobs:
           npm install
           npm run build
       - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if python -m playwright install --with-deps chromium; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
       - name: Measure NFR-1.1 client interaction latency
         env:
           DSPEC_BROWSER_LATENCY_REPORT: evidence/browser-latency.json
