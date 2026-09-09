@@ -168,6 +168,8 @@ def _verify_package_identity(temp: Path, manifest: dict) -> None:
     if not info_path.is_file():
         raise RuntimeError("Release package is missing build-info.json")
     info = _load_json(info_path)
+    if info.get("source_repository") != "Ryan9876/dspec":
+        raise RuntimeError("Release package source repository identity is invalid")
     package_version = str(info.get("version", "")).strip().lstrip("v")
     release_version = str(manifest.get("release_version", "")).strip().lstrip("v")
     if package_version != release_version:
