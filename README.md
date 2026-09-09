@@ -71,6 +71,8 @@ It does **not** create a Login Item, LaunchAgent, or boot daemon.
 
 The macOS launcher is intended to be installed once. After that, a governed release can be applied by stopping DSpec and starting it again. `Start DSpec.app` checks the synced Google Drive `02 - Releases/current/manifest.json`, verifies that the manifest is `validated`, verifies the package SHA-256 and embedded build identity, updates the local runtime, and starts the new version. Candidate manifests are never auto-installed.
 
+Users who installed the earlier `0.1.0` prototype need one manual `0.1.1` bootstrap install because `0.1.0` predates the persistent updater. After the `0.1.1` bootstrap is installed, normal compatible releases do not require reinstalling the macOS launchers or bootstrap. A future release may explicitly require a newer bootstrap by increasing `minimum_runner_version`; in that exceptional case DSpec refuses the update instead of applying an incompatible release.
+
 ## Providers
 
 Local discovery probes:
