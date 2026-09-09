@@ -116,6 +116,53 @@ def main() -> None:
             page.get_by_role("button", name="Requirements").click()
             expect(page.get_by_text("Requirements draft", exact=True)).to_be_visible()
 
+            # Render a provider-backed-style provisional stream in the browser
+            # with timing gaps so the provisional and final-selection states
+            # are observable rather than only source-reviewed.
+            page.evaluate("""() => {
+                const originalFetch = window.fetch.bind(window);
+                window.__dspecOriginalFetch = originalFetch;
+                window.fetch = (input, init) => {
+                    const url = typeof input === "string" ? input : input.url;
+                    if (url === "/api/spec/stream" && init?.method === "POST") {
+                        const encoder = new TextEncoder();
+                        const stream = new ReadableStream({
+                            start(controller) {
+                                const send = (value) => controller.enqueue(encoder.encode(value));
+                                send('id: 1\\nevent: candidate_start\\ndata: {"seq":1,"attempt":1,"provisional":true}\\n\\n');
+                                setTimeout(() => send('id: 2\\nevent: token\\ndata: {"seq":2,"attempt":1,"provisional":true,"text":"# Streaming requirements\\\\n\\\\nVisible while Refine evaluates."}\\n\\n'), 80);
+                                setTimeout(() => send('id: 3\\nevent: candidate_end\\ndata: {"seq":3,"attempt":1,"provisional":true}\\n\\n'), 650);
+                                setTimeout(() => send('id: 4\\nevent: candidate_selected\\ndata: {"seq":4,"provisional":false,"content":"# Final selected requirements\\\\n\\\\nAuthoritative Refine result."}\\n\\n'), 1150);
+                                setTimeout(() => {
+                                    send('id: 5\\nevent: complete\\ndata: {"seq":5,"specType":"requirements","revision":1,"version":1}\\n\\n');
+                                    controller.close();
+                                }, 1800);
+                            }
+                        });
+                        return Promise.resolve(new Response(stream, {
+                            status: 200,
+                            headers: {
+                                "Content-Type": "text/event-stream",
+                                "X-DSpec-Start-Seq": "0"
+                            }
+                        }));
+                    }
+                    return originalFetch(input, init);
+                };
+            }""")
+            page.get_by_role("button", name="Generate").click()
+            expect(page.get_by_text("Provisional candidate 1", exact=False)).to_be_visible(timeout=5_000)
+            expect(page.get_by_text("Visible while Refine evaluates.", exact=False)).to_be_visible(timeout=5_000)
+            expect(page.get_by_text("Final Refine-selected draft", exact=False)).to_be_visible(timeout=5_000)
+            expect(page.get_by_text("Authoritative Refine result.", exact=False)).to_be_visible(timeout=5_000)
+            page.wait_for_timeout(900)
+            page.evaluate("""() => {
+                if (window.__dspecOriginalFetch) {
+                    window.fetch = window.__dspecOriginalFetch;
+                    delete window.__dspecOriginalFetch;
+                }
+            }""")
+
             review_fixture = """# Requirements Definition
 
 ## User workflow
