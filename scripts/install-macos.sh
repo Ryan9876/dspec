@@ -15,6 +15,10 @@ APPS="$HOME/Applications"
 
 mkdir -p "$HOME_ROOT" "$BIN" "$APPS"
 
+if [[ -x "$BIN/dspec" ]]; then
+  "$BIN/dspec" stop >/dev/null 2>&1 || true
+fi
+
 # A manual install establishes a fresh bootstrap application while preserving
 # user data under ~/.dspec/runtime (database, logs, backups). Any previously
 # auto-updated application tree is discarded so the package being installed
