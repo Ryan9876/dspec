@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            if python -m playwright install --with-deps chromium; then
+            if python -m playwright install chromium; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then
@@ -115,7 +115,7 @@ jobs:
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            if python -m playwright install --with-deps chromium; then
+            if python -m playwright install chromium; then
               exit 0
             fi
             if [ "$attempt" -eq 3 ]; then
