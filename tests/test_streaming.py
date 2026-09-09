@@ -147,7 +147,7 @@ Invalid input returns an explicit error response. Provider failure preserves sta
     async def fake_streamer(**kwargs):
         assert "functional_scope_answers" in kwargs
         yield chunk("[[ ## reasoning ## ]]hidden")
-        yield chunk("[[ ## requirements_spec ## ]]\\n# Provisional")
+        yield chunk("[[ ## requirements_spec ## ]]\n# Provisional")
         yield chunk(" requirements")
         yield chunk("[[ ## quality_assessment ## ]]{}")
         yield final_prediction
