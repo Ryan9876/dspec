@@ -837,7 +837,8 @@ def test_discovery_inputs_after_intent_reset_exclude_stale_answers_and_drafts(
     session = client.get(f"/api/sessions/{sid}").json()
     inputs = engine._discovery_inputs(session, "constitution")
 
-    assert "Create a simple number generator" in inputs["current_answers"]
+    assert "Project intent:\nCreate a simple number generator" in inputs["current_answers"]
+    assert "assistant-constitution" not in inputs["current_answers"]
     assert "opt_gov_board" not in inputs["current_answers"]
     assert "STALE GOVERNING BOARD" not in inputs["current_answers"]
     assert "STALE DRAFT" not in inputs["current_answers"]
@@ -866,9 +867,10 @@ def test_discovery_uses_bounded_budget_and_reports_diagnostics(
     async def fake_run(**inputs):
         assert len(inputs["prior_tiers"]) <= spec_engine_module.DISCOVERY_MAX_PRIOR_CHARS + 80
         assert len(inputs["current_answers"]) <= (
-            spec_engine_module.DISCOVERY_MAX_ANSWERS_CHARS
+            spec_engine_module.DISCOVERY_MAX_INTENT_CHARS
+            + spec_engine_module.DISCOVERY_MAX_ANSWERS_CHARS
             + spec_engine_module.DISCOVERY_MAX_DRAFT_CHARS
-            + 120
+            + 260
         )
         return SimpleNamespace(
             discovery={
