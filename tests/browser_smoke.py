@@ -204,6 +204,125 @@ The application must preserve saved specification content across browser refresh
             del console_errors[expected_console_start:]
             page.get_by_role("button", name="Cancel").click()
 
+            # DS-CHG-002: rendered consequence-first architecture comparison.
+            page.get_by_role("button", name="Solution").click()
+            expect(page.get_by_text("Choose the implementation approach", exact=True)).to_be_visible()
+
+            architecture_options = {
+                "recommended_option_id": "best",
+                "alternative_objective": "Enterprise alignment",
+                "decision_summary": "Best Fit balances future growth with manageable operating complexity.",
+                "source_context_sha256": "a" * 64,
+                "customization": "",
+                "options": [
+                    {
+                        "id": "best", "role": "best_fit", "title": "Best Fit — Recommended",
+                        "plain_english_summary": "This gives the product room to grow without taking on unnecessary operational complexity.",
+                        "why_recommended": "The requirements need structured shared data, integrations, and future expansion.",
+                        "advantages": ["Strong overall fit"], "tradeoffs": ["Moderate operating complexity"],
+                        "operational_impact": "A small number of well-understood services must be operated.",
+                        "why_engineers_care": "Core platform choices become more expensive to change after data and integrations depend on them.",
+                        "engineering_concept": {"id": "separation-of-concerns", "label": "Separation of concerns", "mental_model": "Give different responsibilities clear boundaries."},
+                        "reconsider_when": ["The application becomes permanently single-user and local-only."],
+                        "technical_details": [{"category": "Database", "choice": "PostgreSQL", "consequence": "Runs a relational database service."}],
+                    },
+                    {
+                        "id": "simple", "role": "simplest", "title": "Simplest",
+                        "plain_english_summary": "This keeps the number of moving parts as low as practical.",
+                        "why_recommended": "Choose it when operational simplicity matters more than specialized components.",
+                        "advantages": ["Fewer moving parts"], "tradeoffs": ["Less specialization"],
+                        "operational_impact": "Lower day-to-day operating burden.",
+                        "why_engineers_care": "Every additional component creates another failure and maintenance surface.",
+                        "engineering_concept": {"id": "simplicity", "label": "Simplicity", "mental_model": "Do not add moving parts without a requirement."},
+                        "reconsider_when": ["Scale or integration needs increase."],
+                        "technical_details": [{"category": "Backend", "choice": "TypeScript", "consequence": "Keeps one primary application language."}],
+                    },
+                    {
+                        "id": "alt", "role": "alternative", "title": "Enterprise Alignment",
+                        "plain_english_summary": "This aligns closely with an existing Microsoft operating environment.",
+                        "why_recommended": "Choose it when existing enterprise support and skills dominate the decision.",
+                        "advantages": ["Environment fit"], "tradeoffs": ["Heavier platform"],
+                        "operational_impact": "Uses established enterprise tooling and support patterns.",
+                        "why_engineers_care": "Organizational skills and platform standards affect lifetime support cost.",
+                        "engineering_concept": {"id": "platform-alignment", "label": "Platform alignment", "mental_model": "Prefer the existing operating environment unless requirements justify divergence."},
+                        "reconsider_when": ["The operating environment changes."],
+                        "technical_details": [{"category": "Backend", "choice": ".NET", "consequence": "Aligns with Microsoft tooling."}],
+                    },
+                ],
+            }
+            page.route("**/api/decisions/architecture/options", lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(architecture_options)
+            ))
+            page.get_by_role("button", name="Compare options").click()
+            expect(page.get_by_text("Best Fit — Recommended", exact=True)).to_be_visible()
+            expect(page.get_by_text("Simplest", exact=True)).to_be_visible()
+            expect(page.get_by_text("Enterprise Alignment", exact=True)).to_be_visible()
+            expect(page.get_by_text("What this means for you", exact=True).first).to_be_visible()
+            expect(page.get_by_text("Why engineers care", exact=True).first).to_be_visible()
+            expect(page.get_by_text("Technical details", exact=True).first).to_be_visible()
+            expect(page.get_by_text("PostgreSQL", exact=True)).not_to_be_visible()
+            page.get_by_text("Technical details", exact=True).first.click()
+            expect(page.get_by_text("PostgreSQL", exact=True)).to_be_visible()
+            page.unroute("**/api/decisions/architecture/options")
+
+            # Persist minimal Solution/Tasks fixtures so the Tasks-stage strategy
+            # screen is exercised without invoking a live provider.
+            tiers_probe = page.evaluate(
+                """async ({sessionId}) => {
+                    const headers = {'Content-Type': 'application/json'};
+                    const solution = await fetch('/api/spec/save', {
+                        method: 'POST', headers,
+                        body: JSON.stringify({session_id: sessionId, stage: 'solution', content: '# Solution\\n\\nSOL-001 governed implementation approach.'}),
+                    });
+                    const tasks = await fetch('/api/spec/save', {
+                        method: 'POST', headers,
+                        body: JSON.stringify({session_id: sessionId, stage: 'tasks', content: '# Tasks\\n\\n## T-001 — Implement governed change\\nMaps to REQ-001. Verification: pytest -q'}),
+                    });
+                    return {solution: solution.status, tasks: tasks.status};
+                }""",
+                {"sessionId": save_probe["session_id"]},
+            )
+            assert tiers_probe == {"solution": 200, "tasks": 200}, tiers_probe
+            page.reload(wait_until="domcontentloaded")
+            page.get_by_role("button", name="Tasks").click()
+            expect(page.get_by_text("Implementation strategy & cloud budget", exact=True)).to_be_visible()
+            expect(page.get_by_text("Automatically escalate — Recommended", exact=True)).to_be_visible()
+            expect(page.get_by_text("Budget controls may pause paid work", exact=False)).to_be_visible()
+
+            def strategy_plan(name, label, local, standard, advanced, expected):
+                return {
+                    "strategy": name, "strategy_label": label, "budget_status": "NO_LIMIT", "blocked_task_count": 0,
+                    "model_mix": {
+                        "local": {"tasks": local, "percent": float(local * 10)},
+                        "standard": {"tasks": standard, "percent": float(standard * 10)},
+                        "advanced": {"tasks": advanced, "percent": float(advanced * 10)},
+                    },
+                    "cloud_api_cost_estimate": {"low": round(expected * 0.6, 2), "expected": expected, "high": round(expected * 1.6, 2)},
+                    "cost_confidence": "ESTIMATE",
+                    "estimate_assumptions": ["Cloud API cost only; local compute is not priced."],
+                }
+
+            estimate_fixture = {
+                "status": "ESTIMATE", "source_snapshot_sha256": "b" * 64,
+                "recommended_strategy": "cost_optimized", "selected_strategy": None,
+                "budget": None, "escalation": "automatic", "budget_behavior": "stop_before_exceeding",
+                "plans": {
+                    "cost_optimized": strategy_plan("cost_optimized", "Cost Optimized — Recommended", 7, 2, 1, 4.25),
+                    "balanced": strategy_plan("balanced", "Balanced", 3, 4, 3, 12.50),
+                    "maximum_capability": strategy_plan("maximum_capability", "Maximum Capability", 0, 1, 9, 31.75),
+                },
+            }
+            page.route("**/api/execution/estimate", lambda route: route.fulfill(
+                status=200, content_type="application/json", body=json.dumps(estimate_fixture)
+            ))
+            page.get_by_role("button", name="Estimate implementation").click()
+            expect(page.get_by_text("Cost Optimized — Recommended", exact=True)).to_be_visible()
+            expect(page.get_by_text("Balanced", exact=True)).to_be_visible()
+            expect(page.get_by_text("Maximum Capability", exact=True)).to_be_visible()
+            expect(page.get_by_text("$4.25", exact=True)).to_be_visible()
+            expect(page.get_by_text("Estimated model mix", exact=True).first).to_be_visible()
+            page.unroute("**/api/execution/estimate")
+
             page.get_by_role("button", name="Repository Audit").click()
             expect(page.get_by_text("Local repository audit", exact=True)).to_be_visible()
             page.get_by_placeholder("/Users/you/Workspace/project").fill(str(ROOT))
