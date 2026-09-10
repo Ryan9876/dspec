@@ -390,6 +390,17 @@ def plan_execution(
             else {"low": None, "expected": None, "high": None}
         ),
         "cost_confidence": "LOW" if unknown_pricing else "ESTIMATE",
+        "escalation_policy": {
+            "same_tier_failed_attempt_limit": 2,
+            "on_nonconvergence": "ESCALATION_REQUIRED",
+            "re_diagnose_before_retry": True,
+            "instruction": "After two substantive failed attempts at the same tier, stop local patching, re-diagnose, and escalate rather than weakening requirements or continuing blind retries.",
+        },
+        "result_contract": {
+            "statuses": ["COMPLETE", "BLOCKED", "ESCALATION_REQUIRED"],
+            "required_fields": ["task_id", "status", "evidence"],
+            "escalation_fields": ["reason", "attempts", "recommended_minimum_capability"],
+        },
         "estimate_assumptions": [
             "Cloud API cost only; local compute/electricity is not priced.",
             "Token estimates are planning ranges based on task reasoning complexity and context breadth.",
