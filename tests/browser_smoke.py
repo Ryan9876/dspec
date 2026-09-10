@@ -99,6 +99,15 @@ def main() -> None:
                 print("BROWSER_SESSIONS_PROBE", json.dumps(sessions_probe), flush=True)
                 raise
 
+            brief = page.get_by_placeholder("Describe what you want to build, who it is for, and the outcome you want…")
+            brief.fill("Create a simple number generator")
+            page.get_by_role("button", name="Save project brief").click()
+            page.wait_for_timeout(250)
+            brief.fill("Create a simple dice roller")
+            page.get_by_role("button", name="Save project brief").click()
+            expect(page.get_by_text("Project intent changed.", exact=False)).to_be_visible(timeout=5_000)
+            expect(page.get_by_text("prior formal specs remain available as history only.", exact=False)).to_be_visible(timeout=5_000)
+
             page.route("**/api/spec/stream", lambda route: route.fulfill(
                 status=200,
                 content_type="text/event-stream",
