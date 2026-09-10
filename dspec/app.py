@@ -117,6 +117,7 @@ class AssistRequest(BaseModel):
 
 class ArchitectureOptionsRequest(BaseModel):
     session_id: str
+    customization: str | None = Field(default=None, max_length=4000)
 
 
 class ArchitectureSelectRequest(BaseModel):
@@ -124,7 +125,7 @@ class ArchitectureSelectRequest(BaseModel):
     selected_option_id: str = Field(min_length=1, max_length=160)
     options: dict[str, Any]
     source_context_sha256: str = Field(min_length=64, max_length=64)
-    custom: dict[str, Any] = {}
+    custom: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionEstimateRequest(BaseModel):
@@ -297,7 +298,7 @@ async def architecture_options(req: ArchitectureOptionsRequest) -> dict[str, Any
             },
         )
     try:
-        return await engine.architecture_options(session)
+        return await engine.architecture_options(session, req.customization)
     except ValueError as exc:
         raise HTTPException(409, {"error": "requirements_required", "message": str(exc), "state_preserved": True}) from exc
     except Exception as exc:
@@ -314,7 +315,10 @@ async def architecture_options(req: ArchitectureOptionsRequest) -> dict[str, Any
 @app.post("/api/decisions/architecture/select")
 def architecture_select(req: ArchitectureSelectRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
-    current_source = engine.architecture_source_sha256(session)
+    current_source = engine.architecture_source_sha256(
+        session,
+        str(req.custom.get("instruction") or "") if isinstance(req.custom, dict) else None,
+    )
     if current_source != req.source_context_sha256:
         raise HTTPException(
             409,
