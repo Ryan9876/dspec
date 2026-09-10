@@ -30,6 +30,55 @@ try:
         questions: list[DiscoveryQuestion]
         gaps_found: list[str]
 
+    class EngineeringConcept(BaseModel):
+        id: str
+        label: str
+        mental_model: str
+
+    class TechnicalDetail(BaseModel):
+        category: str
+        choice: str
+        consequence: str
+
+    class ArchitectureOption(BaseModel):
+        id: str
+        role: str = Field(description="best_fit, simplest, or alternative")
+        title: str
+        plain_english_summary: str
+        why_recommended: str
+        advantages: list[str]
+        tradeoffs: list[str]
+        operational_impact: str
+        why_engineers_care: str
+        engineering_concept: EngineeringConcept
+        reconsider_when: list[str]
+        technical_details: list[TechnicalDetail]
+
+    class ArchitectureOptionsResult(BaseModel):
+        recommended_option_id: str
+        alternative_objective: str
+        options: list[ArchitectureOption]
+        decision_summary: str
+
+    class TaskExecutionProfile(BaseModel):
+        task_id: str
+        title: str
+        task_text: str
+        requirement_ids: list[str]
+        solution_refs: list[str]
+        reasoning_complexity: str = Field(description="easy, medium, or hard")
+        context_breadth: str = Field(description="isolated, component, subsystem, or cross_system")
+        ambiguity: str = Field(description="low, medium, or high")
+        blast_radius: str
+        risk_flags: list[str]
+        minimum_safe_capability: str = Field(description="local, standard, or advanced")
+        validation: str
+        bounded_context_refs: list[str]
+
+    class TaskExecutionProfilesResult(BaseModel):
+        profiles: list[TaskExecutionProfile]
+        summary: str
+
     class SemanticReviewResult(BaseModel):
         score: float = Field(ge=0.0, le=1.0)
         must_fix: list[str]
@@ -66,6 +115,21 @@ try:
         tasks_spec: str = dspy.OutputField(desc="Complete ordered Markdown task plan with requirement traceability and verification.")
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of task executability and traceability.")
 
+    class RequirementsToArchitectureOptions(dspy.Signature):
+        """Compare exactly three coherent implementation approaches derived from the actual requirements and governing constraints. Always return best_fit, simplest, and one meaningful requirement-specific alternative. Explain user/business consequences first, then engineering principle and technical details. Do not ask the user to choose isolated technologies that may be incompatible. Best Fit must be the recommendation unless the supplied constraints make another role definition impossible. Preserve explicit environment, deployment, licensing, security, and organizational constraints."""
+        constitution_context: str = dspy.InputField(desc="Governing product, security, runtime, and operational constraints.")
+        requirements_spec: str = dspy.InputField(desc="Observable requirements and acceptance criteria that must drive the options.")
+        user_preferences: str = dspy.InputField(desc="Saved user preferences and constraints; treat implementation preferences as hypotheses unless explicitly required.")
+        prior_concepts: str = dspy.InputField(desc="Previously encountered engineering concept IDs/labels used only to tune explanation depth, never to change the recommendation.")
+        architecture_options: ArchitectureOptionsResult = dspy.OutputField(desc="Exactly three side-by-side coherent stack/architecture options with Best Fit recommended and plain-English consequences before technical details.")
+
+    class TasksToExecutionProfiles(dspy.Signature):
+        """Classify canonical implementation tasks for safe downstream model routing without changing task scope. For every task preserve its ID/text and map requirement/solution references. Assess reasoning complexity, context breadth, ambiguity, blast radius, risk flags, minimum safe capability, validation, and bounded context references. Security-sensitive, authorization, credential, destructive-data, irreversible migration, or irreversible external-write work must require advanced capability. When uncertain, choose the safer higher capability and state the risk rather than under-classifying."""
+        requirements_spec: str = dspy.InputField(desc="Authoritative requirements and acceptance criteria.")
+        solution_spec: str = dspy.InputField(desc="Approved implementation direction.")
+        tasks_spec: str = dspy.InputField(desc="Canonical task plan; do not rewrite or create new product scope.")
+        execution_profiles: TaskExecutionProfilesResult = dspy.OutputField(desc="One routing profile per canonical task, preserving traceability and validation.")
+
     class SemanticSpecReview(dspy.Signature):
         """Review a DSpec tier as a strict independent reviewer. Evaluate completeness, internal consistency, cross-tier alignment, security/failure behavior where applicable, and downstream executability. Do not claim tests or runtime evidence. A score >= 0.90 requires no material must-fix issue."""
         stage: str = dspy.InputField(desc="Active DSpec tier.")
@@ -84,7 +148,7 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of the revised tier.")
 
     class DiscoverSpecGaps(dspy.Signature):
-        """Analyze the actual saved product input for the active DSpec stage. Ground every question in the supplied intent and prior-tier context. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity, prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve free-text expansion. Constitution questions must focus on purpose and non-negotiable product/operational/security/privacy boundaries; do not invent corporate boards, shareholders, market strategy, or enterprise governance unless the product intent calls for them. Requirements questions focus on user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred."""
+        """Analyze the actual saved product input for the active DSpec stage. Ground every question in supplied intent and prior-tier context. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity, prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve free-text expansion. Present user-facing choices in plain English first: consequences, recommendation, advantages/tradeoffs, risks, and why the decision matters. Introduce the engineering term/principle in context and keep precise technical details available rather than hiding them. Constitution questions focus on purpose and non-negotiable product/operational/security/privacy boundaries. Requirements questions focus on user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred."""
         stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
         prior_tiers: str = dspy.InputField(desc="Current prior-tier specifications, if any.")
         current_answers: str = dspy.InputField(desc="Saved discovery input and current draft context.")
@@ -93,7 +157,7 @@ try:
     DSPY_AVAILABLE = True
 except Exception:
     DSPY_AVAILABLE = False
-    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = ReviseSpec = None  # type: ignore
+    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = ReviseSpec = RequirementsToArchitectureOptions = TasksToExecutionProfiles = None  # type: ignore
 
 
 def status() -> dict[str, Any]:
