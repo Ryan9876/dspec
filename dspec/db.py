@@ -198,6 +198,18 @@ def get_session(session_id: str, connection: sqlite3.Connection | None = None) -
         result["specs"] = specs
         result["drafts"] = drafts
         result["answers"] = answers
+        root = next(
+            (
+                answer for answer in answers
+                if answer.get("stage") == "constitution"
+                and answer.get("question_id") == "assistant-constitution"
+            ),
+            None,
+        )
+        result["intent_context_sha256"] = _intent_hash(
+            root.get("selected_option_id") if root else None,
+            root.get("free_text_payload") if root else None,
+        )
         result["invalidations"] = [
             {"stage": stage, "invalidated_at": invalidated_at}
             for stage, invalidated_at in sorted(invalidations.items(), key=lambda item: STAGES.index(item[0]))
@@ -262,6 +274,36 @@ def list_sessions() -> list[dict[str, Any]]:
 
 def _normalized_intent(selected: str | None, free_text: str | None) -> tuple[str, str]:
     return ((selected or "").strip(), (free_text or "").strip())
+
+
+def _intent_hash(selected: str | None, free_text: str | None) -> str:
+    normalized = _normalized_intent(selected, free_text)
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False).encode()).hexdigest()
+
+
+def _current_intent_hash(conn: sqlite3.Connection, session_id: str) -> str:
+    row = conn.execute(
+        """SELECT selected_option_id,free_text_payload
+           FROM interview_answers
+           WHERE session_id=? AND stage='constitution' AND question_id='assistant-constitution'""",
+        (session_id,),
+    ).fetchone()
+    if not row:
+        return _intent_hash(None, None)
+    return _intent_hash(row["selected_option_id"], row["free_text_payload"])
+
+
+def require_intent_context(
+    conn: sqlite3.Connection,
+    session_id: str,
+    expected_intent_sha256: str,
+) -> None:
+    if _current_intent_hash(conn, session_id) != expected_intent_sha256:
+        raise StateConflict(
+            "Project intent changed while this edit was pending. The stale edit was not saved."
+        )
+
+
 
 
 def save_answer(
@@ -333,13 +375,21 @@ def save_answer(
     }
 
 
-def save_draft_buffer(session_id: str, stage: str, content: str, expected_context: str | None = None) -> dict[str, Any]:
+def save_draft_buffer(
+    session_id: str,
+    stage: str,
+    content: str,
+    expected_context: str | None = None,
+    expected_intent_sha256: str | None = None,
+) -> dict[str, Any]:
     if stage not in STAGES:
         raise ValueError("Invalid stage")
     now = utcnow()
     with tx() as conn:
         if expected_context is not None:
             require_context(conn, session_id, stage, expected_context)
+        if expected_intent_sha256 is not None:
+            require_intent_context(conn, session_id, expected_intent_sha256)
         conn.execute(
             """INSERT INTO draft_buffers(session_id,spec_type,content,updated_at)
             VALUES(?,?,?,?) ON CONFLICT(session_id,spec_type) DO UPDATE SET
@@ -350,7 +400,16 @@ def save_draft_buffer(session_id: str, stage: str, content: str, expected_contex
     return {"stage": stage, "content": content, "updated_at": now}
 
 
-def save_spec(session_id: str, stage: str, content: str, quality_score: float = 0.0, review: dict[str, Any] | None = None, approval_status: str = "draft", expected_context: str | None = None) -> dict[str, Any]:
+def save_spec(
+    session_id: str,
+    stage: str,
+    content: str,
+    quality_score: float = 0.0,
+    review: dict[str, Any] | None = None,
+    approval_status: str = "draft",
+    expected_context: str | None = None,
+    expected_intent_sha256: str | None = None,
+) -> dict[str, Any]:
     if stage not in STAGES:
         raise ValueError("Invalid stage")
     if not content.strip():
@@ -359,6 +418,8 @@ def save_spec(session_id: str, stage: str, content: str, quality_score: float = 
     with tx() as conn:
         if expected_context is not None:
             require_context(conn, session_id, stage, expected_context)
+        if expected_intent_sha256 is not None:
+            require_intent_context(conn, session_id, expected_intent_sha256)
         current = conn.execute("SELECT COALESCE(MAX(revision_number),0) FROM spec_documents WHERE session_id=? AND spec_type=?", (session_id, stage)).fetchone()[0]
         revision = int(current) + 1
         sid = str(uuid.uuid4())
