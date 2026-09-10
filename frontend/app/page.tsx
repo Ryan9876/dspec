@@ -20,6 +20,8 @@ type Session = {
   }>>;
   drafts?: Partial<Record<Stage,{content:string;updated_at:string}>>;
   answers: Array<{stage: Stage; question_id: string; selected_option_id?: string; free_text_payload?: string; updated_at?: string}>;
+  engineering_decisions?: EngineeringDecision[];
+  execution_plan?: ExecutionEstimateBundle | null;
 };
 type Review = {
   score?: number; threshold?: number; passed?: boolean;
@@ -35,6 +37,36 @@ type DiscoveryQuestion = {
   recommended_option_id:string; allow_free_text:boolean;
 };
 type DiscoveryResult = { questions:DiscoveryQuestion[]; gaps_found:string[] };
+type EngineeringConcept = { id:string; label:string; mental_model:string };
+type TechnicalDetail = { category:string; choice:string; consequence:string };
+type ArchitectureOption = {
+  id:string; role:"best_fit"|"simplest"|"alternative"; title:string;
+  plain_english_summary:string; why_recommended:string; advantages:string[]; tradeoffs:string[];
+  operational_impact:string; why_engineers_care:string; engineering_concept:EngineeringConcept;
+  reconsider_when:string[]; technical_details:TechnicalDetail[];
+};
+type ArchitectureOptionsResult = {
+  recommended_option_id:string; alternative_objective:string; decision_summary:string;
+  source_context_sha256:string; customization?:string; options:ArchitectureOption[];
+};
+type EngineeringDecision = {
+  decision_type:string; decision_id:string; selected_option_id?:string;
+  options:ArchitectureOptionsResult; custom?:Record<string,unknown>; source_context_sha256:string; updated_at:string;
+};
+type StrategyName = "cost_optimized"|"balanced"|"maximum_capability";
+type StrategyPlan = {
+  strategy:StrategyName; strategy_label:string; budget_status:string; blocked_task_count:number;
+  model_mix:Record<"local"|"standard"|"advanced",{tasks:number;percent:number}>;
+  cloud_api_cost_estimate:{low:number|null;expected:number|null;high:number|null};
+  cost_confidence:string; estimate_assumptions:string[];
+};
+type ExecutionEstimateBundle = {
+  status:"ESTIMATE"|"SELECTED"|string; source_snapshot_sha256:string;
+  recommended_strategy:StrategyName; selected_strategy?:StrategyName|null;
+  selected_plan?:StrategyPlan; budget?:number|null; escalation?:"automatic"|"ask_first";
+  budget_behavior?:"stop_before_exceeding"|"ask_before_overage"|"no_enforcement";
+  plans:Record<StrategyName,StrategyPlan>;
+};
 type Health = {
   status: string; version: string; port: number; active_provider: {provider:string;model:string};
   active_provider_ready?: boolean;
@@ -389,7 +421,9 @@ export default function Home(){
             })}
           </div>
 
-          {!session?<EmptyState onCreate={newProject}/>:<div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4">
+          {!session?<EmptyState onCreate={newProject}/>:<>
+            <StageDecisionPanel stage={stage} session={session} onChanged={()=>loadSession(session.id)}/>
+            <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4">
             <div className="space-y-4">
               <section className="panel overflow-hidden">
                 <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-3">
@@ -427,7 +461,7 @@ export default function Home(){
                 <div className="mt-2 rounded-lg bg-amber-500/8 p-2 text-amber-200/75">MIPROv2 remains BLOCKED until reviewed training data and authorized model execution exist.</div>
               </section>
             </div>
-          </div>}
+          </div></>}
         </>}
       </section>
     </div>
