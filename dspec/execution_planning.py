@@ -205,7 +205,8 @@ def normalize_profile(profile: dict[str, Any], task_text: str = "") -> dict[str,
     if minimum not in CAPABILITY_RANK:
         minimum = "standard"
 
-    combined = " ".join([task_text.lower(), *risk_flags])
+    source_text = task_text or str(result.get("task_text") or "")
+    combined = " ".join([source_text.lower(), *risk_flags])
     forced = any(pattern in combined for pattern in FORCED_ADVANCED_PATTERNS)
     if forced:
         minimum = "advanced"
