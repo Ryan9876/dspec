@@ -75,6 +75,13 @@ def init_db(path: Path | None = None) -> None:
               updated_at TEXT NOT NULL,
               PRIMARY KEY(session_id, stage, question_id)
             );
+            CREATE TABLE IF NOT EXISTS stage_invalidations (
+              session_id TEXT NOT NULL REFERENCES project_sessions(id) ON DELETE CASCADE,
+              stage TEXT NOT NULL CHECK(stage IN ('constitution','requirements','solution','tasks')),
+              invalidated_at TEXT NOT NULL,
+              reason TEXT NOT NULL,
+              PRIMARY KEY(session_id, stage)
+            );
             CREATE TABLE IF NOT EXISTS audit_reports (
               id TEXT PRIMARY KEY,
               session_id TEXT REFERENCES project_sessions(id) ON DELETE SET NULL,
@@ -123,6 +130,25 @@ def create_session(bundle_name: str, project_type: str = "greenfield") -> dict[s
     return get_session(sid)
 
 
+def _stage_invalidations(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> dict[str, str]:
+    return {
+        row["stage"]: row["invalidated_at"]
+        for row in conn.execute(
+            "SELECT stage,invalidated_at FROM stage_invalidations WHERE session_id=?",
+            (session_id,),
+        )
+    }
+
+
+def _active_after_clause(column: str, cutoff: str | None) -> tuple[str, tuple[Any, ...]]:
+    if not cutoff:
+        return "", ()
+    return f" AND {column}>?", (cutoff,)
+
+
 def get_session(session_id: str, connection: sqlite3.Connection | None = None) -> dict[str, Any]:
     with nullcontext(connection) if connection is not None else connect() as conn:
         # All rows must come from one SQLite snapshot, including during export.
@@ -132,27 +158,50 @@ def get_session(session_id: str, connection: sqlite3.Connection | None = None) -
         if not row:
             raise KeyError(session_id)
         result = dict(row)
+        invalidations = _stage_invalidations(conn, session_id)
         specs: dict[str, Any] = {}
         for stage in STAGES:
+            cutoff = invalidations.get(stage)
+            clause, params = _active_after_clause("created_at", cutoff)
             spec = conn.execute(
-                "SELECT * FROM spec_documents WHERE session_id=? AND spec_type=? ORDER BY revision_number DESC LIMIT 1",
-                (session_id, stage),
+                f"SELECT * FROM spec_documents WHERE session_id=? AND spec_type=?{clause} ORDER BY revision_number DESC LIMIT 1",
+                (session_id, stage, *params),
             ).fetchone()
             if spec:
                 item = dict(spec)
                 item["review"] = json.loads(item.pop("review_json"))
                 specs[stage] = item
-        answers = [dict(r) for r in conn.execute("SELECT * FROM interview_answers WHERE session_id=? ORDER BY stage,question_id", (session_id,))]
-        drafts = {
-            row["spec_type"]: {"content": row["content"], "updated_at": row["updated_at"]}
-            for row in conn.execute(
-                "SELECT spec_type,content,updated_at FROM draft_buffers WHERE session_id=?",
-                (session_id,),
-            )
-        }
+
+        answers: list[dict[str, Any]] = []
+        for answer in conn.execute(
+            "SELECT * FROM interview_answers WHERE session_id=? ORDER BY stage,question_id",
+            (session_id,),
+        ):
+            item = dict(answer)
+            cutoff = invalidations.get(item["stage"])
+            if cutoff and item["updated_at"] <= cutoff:
+                continue
+            answers.append(item)
+
+        drafts: dict[str, dict[str, str]] = {}
+        for draft in conn.execute(
+            "SELECT spec_type,content,updated_at FROM draft_buffers WHERE session_id=?",
+            (session_id,),
+        ):
+            cutoff = invalidations.get(draft["spec_type"])
+            if cutoff and draft["updated_at"] <= cutoff:
+                continue
+            drafts[draft["spec_type"]] = {
+                "content": draft["content"],
+                "updated_at": draft["updated_at"],
+            }
         result["specs"] = specs
         result["drafts"] = drafts
         result["answers"] = answers
+        result["invalidations"] = [
+            {"stage": stage, "invalidated_at": invalidated_at}
+            for stage, invalidated_at in sorted(invalidations.items(), key=lambda item: STAGES.index(item[0]))
+        ]
         for stage, spec in specs.items():
             review = spec["review"]
             if (review.get("semantic_status") == "PASS" or spec["approval_status"] == "approved") and not review_is_current(result, stage):
@@ -211,11 +260,65 @@ def list_sessions() -> list[dict[str, Any]]:
         return [dict(r) for r in conn.execute("SELECT * FROM project_sessions ORDER BY updated_at DESC")]
 
 
-def save_answer(session_id: str, stage: str, question_id: str, selected: str | None, free_text: str | None) -> None:
+def _normalized_intent(selected: str | None, free_text: str | None) -> tuple[str, str]:
+    return ((selected or "").strip(), (free_text or "").strip())
+
+
+def save_answer(
+    session_id: str,
+    stage: str,
+    question_id: str,
+    selected: str | None,
+    free_text: str | None,
+) -> dict[str, Any]:
     if stage not in STAGES:
         raise ValueError("Invalid stage")
+
+    invalidated_stages: list[str] = []
     now = utcnow()
     with tx() as conn:
+        if stage == "constitution" and question_id == "assistant-constitution":
+            previous = conn.execute(
+                """SELECT selected_option_id,free_text_payload
+                   FROM interview_answers
+                   WHERE session_id=? AND stage='constitution' AND question_id='assistant-constitution'""",
+                (session_id,),
+            ).fetchone()
+            changed = bool(
+                previous
+                and _normalized_intent(previous["selected_option_id"], previous["free_text_payload"])
+                != _normalized_intent(selected, free_text)
+            )
+            if changed:
+                invalidated_at = now
+                invalidated_stages = list(STAGES)
+                conn.executemany(
+                    """INSERT INTO stage_invalidations(session_id,stage,invalidated_at,reason)
+                       VALUES(?,?,?,?)
+                       ON CONFLICT(session_id,stage) DO UPDATE SET
+                       invalidated_at=excluded.invalidated_at,reason=excluded.reason""",
+                    [
+                        (
+                            session_id,
+                            current,
+                            invalidated_at,
+                            "Root product intent changed; prior active discovery/spec context is stale.",
+                        )
+                        for current in STAGES
+                    ],
+                )
+                # Draft buffers are ephemeral working state. Formal spec rows are
+                # preserved as history and filtered by the invalidation watermark.
+                conn.execute("DELETE FROM draft_buffers WHERE session_id=?", (session_id,))
+                conn.execute(
+                    """DELETE FROM interview_answers
+                       WHERE session_id=?
+                         AND NOT (stage='constitution' AND question_id='assistant-constitution')""",
+                    (session_id,),
+                )
+                # Ensure the newly written root intent sorts after the watermark.
+                now = utcnow()
+
         conn.execute(
             """INSERT INTO interview_answers(session_id,stage,question_id,selected_option_id,free_text_payload,updated_at)
             VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,stage,question_id) DO UPDATE SET
@@ -223,6 +326,11 @@ def save_answer(session_id: str, stage: str, question_id: str, selected: str | N
             (session_id, stage, question_id, selected, free_text, now),
         )
         conn.execute("UPDATE project_sessions SET updated_at=? WHERE id=?", (now, session_id))
+    return {
+        "saved": True,
+        "intent_invalidated": bool(invalidated_stages),
+        "invalidated_stages": invalidated_stages,
+    }
 
 
 def save_draft_buffer(session_id: str, stage: str, content: str, expected_context: str | None = None) -> dict[str, Any]:
