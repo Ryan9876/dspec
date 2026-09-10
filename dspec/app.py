@@ -279,10 +279,9 @@ def session_get(session_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/answers")
-def answer_save(req: AnswerSave) -> dict[str, bool]:
+def answer_save(req: AnswerSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    db.save_answer(req.session_id, req.stage, req.question_id, req.selected_option_id, req.free_text_payload)
-    return {"saved": True}
+    return db.save_answer(req.session_id, req.stage, req.question_id, req.selected_option_id, req.free_text_payload)
 
 
 @app.post("/api/spec/draft")
