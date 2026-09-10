@@ -2,7 +2,7 @@
 
 DSpec AI is a local, spec-first workspace that turns product intent into a governed four-tier software specification and downstream coding-agent handoff.
 
-**Prototype:** 0.1.2 candidate  
+**Prototype:** 0.1.3 candidate  
 **Runtime:** `http://127.0.0.1:3210`  
 **Lifecycle:** explicit manual start/stop only  
 **Change:** `DS-CHG-001-dspec-ai-prototype`
@@ -137,7 +137,7 @@ python scripts/build-package.py
 
 This creates:
 
-- `dist/DSpec-v0.1.2.zip`
+- `dist/DSpec-v0.1.3.zip`
 - `dist/candidate-manifest.json`
 
 The generated manifest is intentionally marked `"validation_state": "candidate"`. The local runner will not auto-install it from the Google Drive `current` release location until durable release governance explicitly promotes the exact package to `validated`. User-facing releases use semantic version numbers such as `0.1.1`; commit SHA, CI run, and package hash remain internal evidence.
