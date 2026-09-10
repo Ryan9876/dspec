@@ -141,10 +141,11 @@ class SpecEngine:
         return "No architecture option has been selected yet."
 
     @staticmethod
-    def architecture_source_sha256(session: dict[str, Any]) -> str:
+    def architecture_source_sha256(session: dict[str, Any], customization: str | None = None) -> str:
         payload = {
             "constitution": session.get("specs", {}).get("constitution", {}).get("content"),
             "requirements": session.get("specs", {}).get("requirements", {}).get("content"),
+            "customization": (customization or "").strip(),
             "solution_answers": [
                 {
                     key: answer.get(key)
@@ -557,7 +558,7 @@ class SpecEngine:
             "provider": {"provider": selected["provider"], "model": selected["model"]},
         }
 
-    async def architecture_options(self, session: dict[str, Any]) -> dict[str, Any]:
+    async def architecture_options(self, session: dict[str, Any], customization: str | None = None) -> dict[str, Any]:
         if RequirementsToArchitectureOptions is None:
             raise RuntimeError("DSPy architecture-option signature is unavailable.")
         requirements = session.get("specs", {}).get("requirements", {}).get("content", "").strip()
@@ -577,7 +578,10 @@ class SpecEngine:
             result = await dspy.asyncify(program)(
                 constitution_context=session.get("specs", {}).get("constitution", {}).get("content", "No Constitution draft."),
                 requirements_spec=requirements,
-                user_preferences=self._answers(session, "solution"),
+                user_preferences=(
+                    self._answers(session, "solution")
+                    + ("\n\nUser-requested stack customization to re-evaluate:\n" + customization.strip() if customization and customization.strip() else "")
+                ),
                 prior_concepts=prior_concepts,
             )
         options = getattr(result, "architecture_options", None)
@@ -595,8 +599,9 @@ class SpecEngine:
         best_fit = next(item for item in rows if item.get("role") == "best_fit")
         if data.get("recommended_option_id") != best_fit.get("id"):
             data["recommended_option_id"] = best_fit.get("id")
-        source_sha = self.architecture_source_sha256(session)
+        source_sha = self.architecture_source_sha256(session, customization)
         data["source_context_sha256"] = source_sha
+        data["customization"] = (customization or "").strip()
         db.record_concept_exposures(
             [
                 {
