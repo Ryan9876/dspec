@@ -13,10 +13,25 @@ try:
         agent_executable: bool = Field(description="True when a downstream coding agent can act without inventing missing implementation decisions.")
         rubric_score: float = Field(ge=0.0, le=1.0, description="Semantic completeness estimate from 0.0 to 1.0.")
 
+    class EngineeringConcept(BaseModel):
+        id: str
+        label: str
+        mental_model: str
+
+    class TechnicalDetail(BaseModel):
+        category: str
+        choice: str
+        consequence: str
+
     class DiscoveryOption(BaseModel):
         id: str
         label: str
         rationale: str
+        plain_english_consequence: str | None = None
+        advantages: list[str] = Field(default_factory=list)
+        tradeoffs: list[str] = Field(default_factory=list)
+        engineering_concept: EngineeringConcept | None = None
+        technical_details: list[TechnicalDetail] = Field(default_factory=list)
 
     class DiscoveryQuestion(BaseModel):
         id: str
@@ -29,16 +44,6 @@ try:
     class DiscoveryResult(BaseModel):
         questions: list[DiscoveryQuestion]
         gaps_found: list[str]
-
-    class EngineeringConcept(BaseModel):
-        id: str
-        label: str
-        mental_model: str
-
-    class TechnicalDetail(BaseModel):
-        category: str
-        choice: str
-        consequence: str
 
     class ArchitectureOption(BaseModel):
         id: str
@@ -148,7 +153,7 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of the revised tier.")
 
     class DiscoverSpecGaps(dspy.Signature):
-        """Analyze the actual saved product input for the active DSpec stage. Ground every question in supplied intent and prior-tier context. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity, prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve free-text expansion. Present user-facing choices in plain English first: consequences, recommendation, advantages/tradeoffs, risks, and why the decision matters. Introduce the engineering term/principle in context and keep precise technical details available rather than hiding them. Constitution questions focus on purpose and non-negotiable product/operational/security/privacy boundaries. Requirements questions focus on user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred."""
+        """Analyze the actual saved product input for the active DSpec stage. Ground every question in supplied intent and prior-tier context. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity, prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve free-text expansion. Present user-facing choices in plain English first: consequences, recommendation, advantages/tradeoffs, risks, and why the decision matters. For material engineering choices populate plain_english_consequence, advantages, tradeoffs, engineering_concept, and technical_details so the interface can teach the what/why without hiding precision. Previously encountered concepts may shorten/reconnect explanations but must never change the recommendation, risk rating, or required behavior. Constitution questions focus on purpose and non-negotiable product/operational/security/privacy boundaries. Requirements questions focus on user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred."""
         stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
         prior_tiers: str = dspy.InputField(desc="Current prior-tier specifications, if any.")
         current_answers: str = dspy.InputField(desc="Saved discovery input and current draft context.")
