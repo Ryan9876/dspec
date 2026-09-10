@@ -218,6 +218,19 @@ def test_execution_estimate_defaults_cost_optimized_and_forces_security_advanced
     assert current.status_code == 200
     assert current.json()["selected_plan"]["strategy"] == "cost_optimized"
 
+    exported = client.get(f"/api/export/{sid}?allow_draft=true")
+    assert exported.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(exported.content)) as archive:
+        names = set(archive.namelist())
+        assert "execution/execution-plan.json" in names
+        assert "execution/local.md" in names
+        assert "execution/advanced.md" in names
+        assert "execution/context/T-001.json" in names
+        context = json.loads(archive.read("execution/context/T-001.json"))
+        assert context["authoritative"] is False
+        assert context["canonical_task_id"] == "T-001"
+        assert context["requirement_ids"] == ["REQ-001"]
+
     save_tier(client, sid, "tasks", "# Tasks\n\nT-001 changed task scope.")
     after_change = client.get(f"/api/execution/plan/{sid}")
     assert after_change.status_code == 404
