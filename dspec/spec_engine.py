@@ -35,6 +35,11 @@ _SIGNATURES = {
     "tasks": SpecToTasks,
 }
 
+DISCOVERY_MAX_OUTPUT_TOKENS = 1400
+DISCOVERY_MAX_PRIOR_CHARS = 6000
+DISCOVERY_MAX_ANSWERS_CHARS = 2500
+DISCOVERY_MAX_DRAFT_CHARS = 4000
+
 
 class ProductIntentRequired(ValueError):
     pass
@@ -123,6 +128,38 @@ class SpecEngine:
             if spec:
                 parts.append(f"# {current.title()}\n{spec['content']}")
         return "\n\n".join(parts) if parts else "No prior tier exists."
+
+    @staticmethod
+    def _clip_context(value: str, max_chars: int) -> str:
+        text = value.strip()
+        if len(text) <= max_chars:
+            return text
+        omitted = len(text) - max_chars
+        return text[:max_chars].rstrip() + f"\n\n[DSpec context truncated: {omitted} characters omitted]"
+
+    def _discovery_inputs(self, session: dict[str, Any], stage: str) -> dict[str, str]:
+        self.validate_input(session, stage)
+        answers = self._answers(session, stage)
+        current = (
+            session.get("drafts", {}).get(stage, {}).get("content")
+            or session.get("specs", {}).get(stage, {}).get("content", "")
+        )
+        return {
+            "stage": stage,
+            "prior_tiers": self._clip_context(
+                self._prior(session, stage),
+                DISCOVERY_MAX_PRIOR_CHARS,
+            ),
+            "current_answers": (
+                self._clip_context(answers, DISCOVERY_MAX_ANSWERS_CHARS)
+                + "\n\nCurrent active draft:\n"
+                + (
+                    self._clip_context(current, DISCOVERY_MAX_DRAFT_CHARS)
+                    if current
+                    else "No active draft."
+                )
+            ),
+        }
 
     def validate_input(self, session: dict[str, Any], stage: str) -> None:
         if stage == "constitution" and not self._project_intent(session):
@@ -515,30 +552,22 @@ class SpecEngine:
     async def discover(self, session: dict[str, Any], stage: str) -> dict[str, Any]:
         if DiscoverSpecGaps is None:
             raise RuntimeError("DSPy discovery signature is unavailable.")
-        self.validate_input(session, stage)
         import dspy
 
         selected = await selected_for_inference(self.gateway)
-        lm = make_lm(selected["provider"], selected["model"], max_tokens=1400, temperature=0.0)
+        inputs = self._discovery_inputs(session, stage)
+        lm = make_lm(
+            selected["provider"],
+            selected["model"],
+            max_tokens=DISCOVERY_MAX_OUTPUT_TOKENS,
+            temperature=0.0,
+        )
         program = dspy.Predict(DiscoverSpecGaps)
-        current = session.get("drafts", {}).get(stage, {}).get("content") or session.get("specs", {}).get(stage, {}).get("content", "")
-        prior = self._prior(session, stage)
-        if len(prior) > 6000:
-            prior = prior[:6000].rstrip() + "\n\n[DSpec context truncated]"
-        answers = self._answers(session, stage)
-        if len(answers) > 2500:
-            answers = answers[:2500].rstrip() + "\n\n[DSpec context truncated]"
-        if len(current) > 4000:
-            current = current[:4000].rstrip() + "\n\n[DSpec context truncated]"
-        inputs = {
-            "stage": stage,
-            "prior_tiers": prior,
-            "current_answers": f"{answers}\n\nCurrent active draft:\n{current or 'No active draft.'}",
-        }
         started = time.perf_counter()
         with dspy.context(lm=lm):
             result = await dspy.asyncify(program)(**inputs)
         latency_ms = int((time.perf_counter() - started) * 1000)
+
         discovery = getattr(result, "discovery", None)
         if hasattr(discovery, "model_dump"):
             payload = discovery.model_dump()
@@ -546,11 +575,13 @@ class SpecEngine:
             payload = discovery
         else:
             raise RuntimeError("DSPy returned an invalid discovery result.")
+
         payload["diagnostics"] = {
             "provider": selected["provider"],
             "model": selected["model"],
             "request_latency_ms": latency_ms,
             "input_chars": sum(len(value) for value in inputs.values()),
-            "max_output_tokens": 1400,
+            "max_output_tokens": DISCOVERY_MAX_OUTPUT_TOKENS,
+            "measurement_scope": "local DSpec request timing; provider token accounting not asserted",
         }
         return payload
