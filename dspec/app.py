@@ -78,6 +78,7 @@ class SpecSave(BaseModel):
     session_id: str
     stage: Literal["constitution", "requirements", "solution", "tasks"]
     content: str = Field(min_length=1)
+    expected_intent_sha256: str | None = None
 
 
 class ReviewRequest(BaseModel):
@@ -287,14 +288,27 @@ def answer_save(req: AnswerSave) -> dict[str, Any]:
 @app.post("/api/spec/draft")
 def spec_draft(req: SpecSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    return db.save_draft_buffer(req.session_id, req.stage, req.content)
+    return db.save_draft_buffer(
+        req.session_id,
+        req.stage,
+        req.content,
+        expected_intent_sha256=req.expected_intent_sha256,
+    )
 
 
 @app.post("/api/spec/save")
 def spec_save(req: SpecSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
     review = evaluate(req.stage, req.content)
-    return db.save_spec(req.session_id, req.stage, req.content, review["score"], review, "draft")
+    return db.save_spec(
+        req.session_id,
+        req.stage,
+        req.content,
+        review["score"],
+        review,
+        "draft",
+        expected_intent_sha256=req.expected_intent_sha256,
+    )
 
 
 @app.post("/api/spec/review")
