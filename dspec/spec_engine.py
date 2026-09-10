@@ -535,11 +535,22 @@ class SpecEngine:
             "prior_tiers": prior,
             "current_answers": f"{answers}\n\nCurrent active draft:\n{current or 'No active draft.'}",
         }
+        started = time.perf_counter()
         with dspy.context(lm=lm):
             result = await dspy.asyncify(program)(**inputs)
+        latency_ms = int((time.perf_counter() - started) * 1000)
         discovery = getattr(result, "discovery", None)
         if hasattr(discovery, "model_dump"):
-            return discovery.model_dump()
-        if isinstance(discovery, dict):
-            return discovery
-        raise RuntimeError("DSPy returned an invalid discovery result.")
+            payload = discovery.model_dump()
+        elif isinstance(discovery, dict):
+            payload = discovery
+        else:
+            raise RuntimeError("DSPy returned an invalid discovery result.")
+        payload["diagnostics"] = {
+            "provider": selected["provider"],
+            "model": selected["model"],
+            "request_latency_ms": latency_ms,
+            "input_chars": sum(len(value) for value in inputs.values()),
+            "max_output_tokens": 1400,
+        }
+        return payload
