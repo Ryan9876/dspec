@@ -660,16 +660,37 @@ class SpecEngine:
         lm = self._lm(selected)
         program = dspy.Predict(DiscoverSpecGaps)
         current = session.get("specs", {}).get(stage, {}).get("content", "")
+        concepts = db.list_concept_exposures()
+        concept_context = "\n".join(
+            f"- {item['concept_id']}: {item['label']} (encountered {item['exposure_count']} times)"
+            for item in concepts[:30]
+        ) or "No previously encountered engineering concepts."
         inputs = {
             "stage": stage,
             "prior_tiers": self._prior(session, stage),
-            "current_answers": f"{self._answers(session, stage)}\n\nCurrent draft:\n{current or 'No current draft.'}",
+            "current_answers": (
+                f"{self._answers(session, stage)}\n\nCurrent draft:\n{current or 'No current draft.'}"
+                f"\n\nConcept exposure for explanation depth only — never use this to change the recommendation or risk:\n{concept_context}"
+            ),
         }
         with dspy.context(lm=lm):
             result = await dspy.asyncify(program)(**inputs)
         discovery = getattr(result, "discovery", None)
         if hasattr(discovery, "model_dump"):
-            return discovery.model_dump()
-        if isinstance(discovery, dict):
-            return discovery
-        raise RuntimeError("DSPy returned an invalid discovery result.")
+            data = discovery.model_dump()
+        elif isinstance(discovery, dict):
+            data = discovery
+        else:
+            raise RuntimeError("DSPy returned an invalid discovery result.")
+        exposed: list[dict[str, str]] = []
+        for question in data.get("questions", []):
+            if not isinstance(question, dict):
+                continue
+            for option in question.get("options", []):
+                if not isinstance(option, dict):
+                    continue
+                concept = option.get("engineering_concept")
+                if isinstance(concept, dict) and concept.get("id"):
+                    exposed.append({"id": str(concept.get("id")), "label": str(concept.get("label") or concept.get("id"))})
+        db.record_concept_exposures(exposed)
+        return data
