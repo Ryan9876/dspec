@@ -133,3 +133,13 @@ def test_execution_views_are_derived_and_traceable():
     assert "canonical DSpec requirements, solution, and tasks remain authoritative" in text
     assert "T-001" in text
     assert "abc123" in text
+
+
+def test_non_convergence_contract_requires_rediagnosis_and_escalation():
+    local = candidate("ollama", "local-coder", "local", local=True)
+    plan = plan_execution([profile()], [local], strategy="cost_optimized")
+    policy = plan["escalation_policy"]
+    assert policy["same_tier_failed_attempt_limit"] == 2
+    assert policy["on_nonconvergence"] == "ESCALATION_REQUIRED"
+    assert policy["re_diagnose_before_retry"] is True
+    assert plan["result_contract"]["statuses"] == ["COMPLETE", "BLOCKED", "ESCALATION_REQUIRED"]
