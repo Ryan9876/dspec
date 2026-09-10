@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any, AsyncIterator
@@ -8,17 +9,20 @@ from . import db
 from .dspy_signatures import (
     ArchitectureToSolution,
     DiscoverSpecGaps,
+    RequirementsToArchitectureOptions,
     DSPY_AVAILABLE,
     IdeaToConstitution,
     ReviseSpec,
     ScopeToRequirements,
     SemanticSpecReview,
     SpecToTasks,
+    TasksToExecutionProfiles,
 )
 from .dspy_runtime import make_lm
 from .optimization_store import load_promoted_state
 from .provider import ProviderGateway
 from .provider_selection import selected_for_inference
+from .execution_planning import normalize_profile
 from .quality import evaluate
 from .streaming import StageFieldStreamParser, provider_chunk_text
 
@@ -114,6 +118,44 @@ class SpecEngine:
         return "\n".join(lines) if lines else "No saved discovery answers for this stage."
 
     @staticmethod
+    @staticmethod
+    def _selected_architecture(session: dict[str, Any]) -> str:
+        for item in session.get("engineering_decisions", []):
+            if item.get("decision_type") != "architecture":
+                continue
+            options = item.get("options") or {}
+            selected_id = item.get("selected_option_id")
+            selected = next(
+                (option for option in options.get("options", []) if option.get("id") == selected_id),
+                None,
+            )
+            if selected:
+                return json.dumps(
+                    {
+                        "selected_option": selected,
+                        "customization": item.get("custom") or {},
+                        "source_context_sha256": item.get("source_context_sha256"),
+                    },
+                    sort_keys=True,
+                )
+        return "No architecture option has been selected yet."
+
+    @staticmethod
+    def architecture_source_sha256(session: dict[str, Any]) -> str:
+        payload = {
+            "constitution": session.get("specs", {}).get("constitution", {}).get("content"),
+            "requirements": session.get("specs", {}).get("requirements", {}).get("content"),
+            "solution_answers": [
+                {
+                    key: answer.get(key)
+                    for key in ("question_id", "selected_option_id", "free_text_payload")
+                }
+                for answer in session.get("answers", [])
+                if answer.get("stage") == "solution"
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
     def _prior(session: dict[str, Any], stage: str) -> str:
         parts: list[str] = []
         for current in db.STAGES:
@@ -156,7 +198,10 @@ class SpecEngine:
             return {
                 "constitution_context": specs.get("constitution", {}).get("content", "Constitution not yet drafted."),
                 "requirements_spec": specs.get("requirements", {}).get("content", "Requirements not yet drafted."),
-                "user_architectural_preferences": f"{answers}\n\nAdditional user direction:\n{extra}",
+                "user_architectural_preferences": (
+                    f"{answers}\n\nSelected architecture decision:\n{self._selected_architecture(session)}"
+                    f"\n\nAdditional user direction:\n{extra}"
+                ),
             }
         return {
             "constitution_context": specs.get("constitution", {}).get("content", "Constitution not yet drafted."),
@@ -511,6 +556,93 @@ class SpecEngine:
             "semantic_status": "PASS" if semantic_score >= 0.90 and not semantic_must_fix and not consistency_issues else "FAIL",
             "provider": {"provider": selected["provider"], "model": selected["model"]},
         }
+
+    async def architecture_options(self, session: dict[str, Any]) -> dict[str, Any]:
+        if RequirementsToArchitectureOptions is None:
+            raise RuntimeError("DSPy architecture-option signature is unavailable.")
+        requirements = session.get("specs", {}).get("requirements", {}).get("content", "").strip()
+        if not requirements:
+            raise ValueError("A Requirements draft is required before comparing implementation approaches.")
+        import dspy
+
+        selected = await selected_for_inference(self.gateway)
+        lm = self._lm(selected)
+        program = dspy.Predict(RequirementsToArchitectureOptions)
+        concepts = db.list_concept_exposures()
+        prior_concepts = "\n".join(
+            f"- {item['concept_id']}: {item['label']} (encountered {item['exposure_count']} times)"
+            for item in concepts[:30]
+        ) or "No previously encountered engineering concepts."
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(
+                constitution_context=session.get("specs", {}).get("constitution", {}).get("content", "No Constitution draft."),
+                requirements_spec=requirements,
+                user_preferences=self._answers(session, "solution"),
+                prior_concepts=prior_concepts,
+            )
+        options = getattr(result, "architecture_options", None)
+        if hasattr(options, "model_dump"):
+            data = options.model_dump()
+        elif isinstance(options, dict):
+            data = options
+        else:
+            raise RuntimeError("DSPy returned invalid architecture options.")
+
+        rows = data.get("options") or []
+        roles = [str(item.get("role") or "") for item in rows if isinstance(item, dict)]
+        if len(rows) != 3 or sorted(roles) != ["alternative", "best_fit", "simplest"]:
+            raise RuntimeError("Architecture comparison must contain exactly Best Fit, Simplest, and one meaningful alternative.")
+        best_fit = next(item for item in rows if item.get("role") == "best_fit")
+        if data.get("recommended_option_id") != best_fit.get("id"):
+            data["recommended_option_id"] = best_fit.get("id")
+        source_sha = self.architecture_source_sha256(session)
+        data["source_context_sha256"] = source_sha
+        db.record_concept_exposures(
+            [
+                {
+                    "id": str((item.get("engineering_concept") or {}).get("id") or ""),
+                    "label": str((item.get("engineering_concept") or {}).get("label") or ""),
+                }
+                for item in rows
+            ]
+        )
+        return data
+
+    async def task_execution_profiles(self, session: dict[str, Any]) -> dict[str, Any]:
+        if TasksToExecutionProfiles is None:
+            raise RuntimeError("DSPy task-routing signature is unavailable.")
+        specs = session.get("specs", {})
+        requirements = specs.get("requirements", {}).get("content", "").strip()
+        solution = specs.get("solution", {}).get("content", "").strip()
+        tasks = specs.get("tasks", {}).get("content", "").strip()
+        if not requirements or not solution or not tasks:
+            raise ValueError("Requirements, Solution, and Tasks drafts are required before estimating implementation routing.")
+        import dspy
+
+        selected = await selected_for_inference(self.gateway)
+        lm = self._lm(selected)
+        program = dspy.Predict(TasksToExecutionProfiles)
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(
+                requirements_spec=requirements,
+                solution_spec=solution,
+                tasks_spec=tasks,
+            )
+        profiles = getattr(result, "execution_profiles", None)
+        if hasattr(profiles, "model_dump"):
+            data = profiles.model_dump()
+        elif isinstance(profiles, dict):
+            data = profiles
+        else:
+            raise RuntimeError("DSPy returned invalid task execution profiles.")
+        rows = data.get("profiles") or []
+        if not rows:
+            raise RuntimeError("Task routing produced no task profiles.")
+        data["profiles"] = [
+            normalize_profile(item, str(item.get("task_text") or ""))
+            for item in rows if isinstance(item, dict)
+        ]
+        return data
 
     async def discover(self, session: dict[str, Any], stage: str) -> dict[str, Any]:
         if DiscoverSpecGaps is None:
