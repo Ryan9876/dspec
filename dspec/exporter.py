@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import db
+from .execution_planning import render_execution_views, source_snapshot_sha256
 
 AGENT_FILES = {
     "CLAUDE.md": """# Claude Code Project Guidelines: {name}\n\nRead all four tiers under `specs/{name}/` before modifying code. Requirements outrank task convenience. Implement complete behavior; do not add TODO placeholders. Run each task's verification command before marking it complete.\n""",
@@ -39,6 +40,29 @@ def build_bundle(session_id: str, allow_draft: bool = False) -> tuple[bytes, dic
         files[f"specs/{name}/{stage}.md"] = (prefix + spec["content"]).encode()
     for filename, template in AGENT_FILES.items():
         files[filename] = template.format(name=name).encode()
+
+    execution_manifest: dict[str, Any] = {"status": "not_selected"}
+    execution_bundle = session.get("execution_plan")
+    if execution_bundle and execution_bundle.get("status") == "SELECTED":
+        current_source = source_snapshot_sha256(session)
+        if execution_bundle.get("source_snapshot_sha256") == current_source:
+            selected_plan = execution_bundle.get("selected_plan") or {}
+            files["execution/execution-plan.json"] = json.dumps(selected_plan, indent=2).encode()
+            for path, content in render_execution_views(selected_plan).items():
+                files[path] = content.encode()
+            execution_manifest = {
+                "status": "selected",
+                "strategy": execution_bundle.get("selected_strategy"),
+                "source_snapshot_sha256": current_source,
+                "authoritative": False,
+                "note": "Derived execution views do not replace canonical DSpec requirements, solution, or tasks.",
+            }
+        else:
+            execution_manifest = {
+                "status": "stale_omitted",
+                "authoritative": False,
+                "note": "A stale execution plan was intentionally omitted from export.",
+            }
     manifest: dict[str, Any] = {
         "$schema": "https://dspec.ai/schemas/bundle-manifest.v1.json",
         "bundle_name": name,
@@ -48,6 +72,7 @@ def build_bundle(session_id: str, allow_draft: bool = False) -> tuple[bytes, dic
         "generated_by": {"engine": "DSpec AI Core", "version": "0.1.0", "optimization": "UNOPTIMIZED", "quality_gate": ">=0.90 per approved tier"},
         "specs": {},
         "agent_manifests": list(AGENT_FILES),
+        "execution_plan": execution_manifest,
     }
     for stage in db.STAGES:
         spec = session["specs"][stage]
