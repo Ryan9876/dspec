@@ -92,8 +92,8 @@ def test_architecture_selection_persists_and_stale_comparison_is_rejected(
     sid = create_session(client, "architecture-choice")
     save_tier(client, sid, "requirements", "# Requirements\n\nREQ-001 shared structured data with reliable updates.")
 
-    async def fake_options(session):
-        return architecture_fixture(engine.architecture_source_sha256(session))
+    async def fake_options(session, customization=None):
+        return architecture_fixture(engine.architecture_source_sha256(session, customization))
 
     monkeypatch.setattr(engine, "architecture_options", fake_options)
     generated = client.post("/api/decisions/architecture/options", json={"session_id": sid})
