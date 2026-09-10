@@ -553,6 +553,7 @@ class SpecEngine:
         if DiscoverSpecGaps is None:
             raise RuntimeError("DSPy discovery signature is unavailable.")
         import dspy
+        from dspy.adapters.chat_adapter import ChatAdapter
 
         selected = await selected_for_inference(self.gateway)
         inputs = self._discovery_inputs(session, stage)
@@ -564,7 +565,10 @@ class SpecEngine:
         )
         program = dspy.Predict(DiscoverSpecGaps)
         started = time.perf_counter()
-        with dspy.context(lm=lm):
+        with dspy.context(
+            lm=lm,
+            adapter=ChatAdapter(use_json_adapter_fallback=False),
+        ):
             result = await dspy.asyncify(program)(**inputs)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
