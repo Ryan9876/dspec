@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .dspy_signatures import DSPY_AVAILABLE
 from .network_policy import local_endpoint
 from .security import load_api_key
@@ -11,13 +13,17 @@ def make_lm(
     *,
     max_tokens: int = 24000,
     temperature: float | None = None,
+    num_retries: int = 3,
 ):
     if not DSPY_AVAILABLE:
         raise RuntimeError("DSPy is not installed. Install the governed runtime dependencies before generation.")
 
     import dspy
 
-    common: dict[str, object] = {"max_tokens": max_tokens}
+    common: dict[str, object] = {
+        "max_tokens": max_tokens,
+        "num_retries": num_retries,
+    }
     if temperature is not None:
         common["temperature"] = temperature
 
@@ -42,6 +48,23 @@ def make_lm(
         key = load_api_key("openai")
         if not key:
             raise RuntimeError("OpenAI API key is not configured.")
+        model_family = model.lower()
+        reasoning_model = bool(
+            re.match(
+                r"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\d{4}-\d{2}-\d{2})?|gpt-5(?!-chat)(?:-.*)?)$",
+                model_family,
+            )
+        )
+        if reasoning_model:
+            # DSPy requires reasoning-family OpenAI models to omit low
+            # max_tokens/temperature constructor values. Pass the bounded
+            # completion budget through the provider-native parameter instead.
+            return dspy.LM(
+                f"openai/{model}",
+                api_key=key,
+                max_completion_tokens=max_tokens,
+                num_retries=num_retries,
+            )
         return dspy.LM(f"openai/{model}", api_key=key, **common)
     if provider == "anthropic":
         key = load_api_key("anthropic")
