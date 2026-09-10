@@ -519,7 +519,7 @@ class SpecEngine:
         import dspy
 
         selected = await selected_for_inference(self.gateway)
-        lm = self._lm(selected)
+        lm = make_lm(selected["provider"], selected["model"], max_tokens=1400, temperature=0.0)
         program = dspy.Predict(DiscoverSpecGaps)
         current = session.get("specs", {}).get(stage, {}).get("content", "")
         inputs = {
