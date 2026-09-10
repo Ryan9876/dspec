@@ -908,3 +908,40 @@ def test_discovery_uses_bounded_budget_and_reports_diagnostics(
     assert result["diagnostics"]["model"] == "fixture-model"
     assert result["diagnostics"]["max_output_tokens"] == spec_engine_module.DISCOVERY_MAX_OUTPUT_TOKENS
     assert result["diagnostics"]["request_latency_ms"] >= 0
+
+
+
+def test_discovery_schema_bounds_questions_gaps_and_options():
+    from pydantic import ValidationError
+    from dspec.dspy_signatures import DiscoveryResult
+
+    option = {"id": "a", "label": "A", "rationale": "Short rationale."}
+    question = {
+        "id": "q",
+        "question": "Choose one?",
+        "why_it_matters": "It affects the result.",
+        "options": [
+            option,
+            {"id": "b", "label": "B", "rationale": "Alternative."},
+        ],
+        "recommended_option_id": "a",
+        "allow_free_text": True,
+    }
+
+    with pytest.raises(ValidationError):
+        DiscoveryResult(questions=[question] * 4, gaps_found=[])
+
+    with pytest.raises(ValidationError):
+        DiscoveryResult(questions=[], gaps_found=["g1", "g2", "g3", "g4"])
+
+    too_many_options = {
+        **question,
+        "options": [
+            option,
+            {"id": "b", "label": "B", "rationale": "Alternative."},
+            {"id": "c", "label": "C", "rationale": "Alternative."},
+            {"id": "d", "label": "D", "rationale": "Alternative."},
+        ],
+    }
+    with pytest.raises(ValidationError):
+        DiscoveryResult(questions=[too_many_options], gaps_found=[])
