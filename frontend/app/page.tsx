@@ -471,6 +471,311 @@ export default function Home(){
   </main>
 }
 
+function StageDecisionPanel({stage,session,onChanged}:{stage:Stage;session:Session;onChanged:()=>Promise<void>}){
+  if(stage==="solution")return <ArchitectureDecisionPanel session={session} onChanged={onChanged}/>;
+  if(stage==="tasks")return <ExecutionStrategyPanel session={session} onChanged={onChanged}/>;
+  return null;
+}
+
+function ArchitectureDecisionPanel({session,onChanged}:{session:Session;onChanged:()=>Promise<void>}){
+  const saved=session.engineering_decisions?.find(item=>item.decision_type==="architecture"&&item.decision_id==="primary-stack");
+  const [comparison,setComparison]=useState<ArchitectureOptionsResult|null>(saved?.options??null);
+  const [customizing,setCustomizing]=useState(false);
+  const [customization,setCustomization]=useState(String(saved?.custom?.instruction??saved?.options?.customization??""));
+  const [working,setWorking]=useState(false);
+  const [err,setErr]=useState("");
+
+  useEffect(()=>{
+    setComparison(saved?.options??null);
+    setCustomization(String(saved?.custom?.instruction??saved?.options?.customization??""));
+    setCustomizing(false);
+    setErr("");
+  },[session.id,saved?.updated_at]);
+
+  if(!session.specs.requirements){
+    return <section className="panel mb-4 p-4">
+      <div className="font-semibold">Choose the implementation approach</div>
+      <p className="mt-1 text-sm leading-6 text-slate-500">Finish and save the Requirements first. DSpec will use those requirements to compare complete technology approaches instead of asking you to pick languages or databases without context.</p>
+    </section>;
+  }
+
+  async function generateOptions(instruction=""){
+    setWorking(true);setErr("");
+    try{
+      const result=await api<ArchitectureOptionsResult>("/api/decisions/architecture/options",{
+        method:"POST",
+        body:JSON.stringify({session_id:session.id,customization:instruction.trim()||null}),
+      });
+      setComparison(result);
+      setCustomization(result.customization??instruction);
+      setCustomizing(false);
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  async function selectOption(optionId:string){
+    if(!comparison)return;
+    setWorking(true);setErr("");
+    try{
+      await api("/api/decisions/architecture/select",{
+        method:"POST",
+        body:JSON.stringify({
+          session_id:session.id,
+          selected_option_id:optionId,
+          options:comparison,
+          source_context_sha256:comparison.source_context_sha256,
+          custom:{instruction:comparison.customization??customization.trim()},
+        }),
+      });
+      await onChanged();
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  const selectedId=saved?.selected_option_id;
+  return <section className="panel mb-4 overflow-hidden">
+    <div className="flex items-start gap-4 border-b border-slate-800 p-4">
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold">Choose the implementation approach</div>
+        <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-500">DSpec translates the requirements into three coherent engineering options. The consequences come first; exact languages, databases, frameworks, and infrastructure stay available under Technical details.</p>
+      </div>
+      <button className="btn btn-primary shrink-0" disabled={working} onClick={()=>void generateOptions(customization)}>
+        {working?<LoaderCircle className="mr-1 inline h-4 w-4 animate-spin"/>:<Sparkles className="mr-1 inline h-4 w-4"/>}
+        {comparison?"Refresh comparison":"Compare options"}
+      </button>
+    </div>
+    {err&&<div className="mx-4 mt-4 rounded-lg border border-rose-500/25 bg-rose-500/8 p-3 text-xs text-rose-200">{err}</div>}
+    {!comparison?<div className="p-5 text-sm text-slate-500">The recommendation will be based on the saved Constitution, Requirements, operating constraints, and any architecture preferences you have already provided.</div>:<>
+      <div className="border-b border-slate-800 px-4 py-3">
+        <div className="text-sm text-slate-300">{comparison.decision_summary}</div>
+        {!!comparison.customization&&<div className="mt-2 rounded-lg bg-cyan-500/8 px-3 py-2 text-xs text-cyan-200">Re-evaluated with your constraint: {comparison.customization}</div>}
+      </div>
+      <div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-3">
+        {comparison.options.map(option=>{
+          const recommended=option.id===comparison.recommended_option_id;
+          const selected=option.id===selectedId;
+          return <article key={option.id} className={`flex min-w-0 flex-col rounded-xl border p-4 ${recommended?"border-indigo-400/40 bg-indigo-500/7":"border-slate-800 bg-slate-950/25"}`}>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-base font-semibold text-slate-100">{option.title}</div>
+                <div className="mt-1 text-[11px] uppercase tracking-wider text-slate-600">{option.role==="best_fit"?"Best overall fit":option.role==="simplest"?"Lowest complexity":comparison.alternative_objective}</div>
+              </div>
+              {recommended&&<span className="rounded-full bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-300">Recommended</span>}
+            </div>
+
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">What this means for you</div>
+              <p className="mt-1 text-sm leading-6 text-slate-300">{option.plain_english_summary}</p>
+            </div>
+
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{recommended?"Why DSpec recommends it":"Why you might choose it"}</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{option.why_recommended}</p>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div><div className="text-[11px] font-semibold text-emerald-300/80">Advantages</div><div className="mt-1 space-y-1">{option.advantages.slice(0,4).map(item=><div key={item} className="text-xs leading-5 text-slate-400">• {item}</div>)}</div></div>
+              <div><div className="text-[11px] font-semibold text-amber-300/80">Tradeoffs</div><div className="mt-1 space-y-1">{option.tradeoffs.slice(0,4).map(item=><div key={item} className="text-xs leading-5 text-slate-400">• {item}</div>)}</div></div>
+            </div>
+
+            <div className="mt-4 rounded-lg bg-slate-900/70 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Operational impact</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{option.operational_impact}</p>
+            </div>
+
+            <div className="mt-3 rounded-lg border border-cyan-500/15 bg-cyan-500/5 p-3">
+              <div className="text-[11px] font-semibold text-cyan-300">Why engineers care</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{option.why_engineers_care}</p>
+              <div className="mt-2 text-[11px] text-slate-500"><span className="font-semibold text-slate-400">{option.engineering_concept.label}:</span> {option.engineering_concept.mental_model}</div>
+            </div>
+
+            {!!option.reconsider_when.length&&<div className="mt-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">What would change this recommendation</div>
+              <div className="mt-1 space-y-1">{option.reconsider_when.slice(0,3).map(item=><div key={item} className="text-[11px] leading-5 text-slate-500">• {item}</div>)}</div>
+            </div>}
+
+            <details className="mt-4 rounded-lg border border-slate-800 bg-slate-950/40">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-300">Technical details</summary>
+              <div className="border-t border-slate-800 p-3">
+                {option.technical_details.map((item,index)=><div key={`${index}-${item.category}`} className="mb-2 last:mb-0">
+                  <div className="flex items-baseline justify-between gap-3 text-xs"><span className="text-slate-500">{item.category}</span><span className="text-right font-medium text-slate-200">{item.choice}</span></div>
+                  <div className="mt-0.5 text-[11px] leading-4 text-slate-600">{item.consequence}</div>
+                </div>)}
+              </div>
+            </details>
+
+            <button className={`btn mt-4 w-full ${recommended?"btn-primary":""}`} disabled={working||selected} onClick={()=>void selectOption(option.id)}>
+              {selected?"Selected":"Choose this approach"}
+            </button>
+          </article>;
+        })}
+      </div>
+      <div className="border-t border-slate-800 p-4">
+        {!customizing?<button className="btn" onClick={()=>setCustomizing(true)}>Customize technology choices</button>:<div className="grid gap-2 md:grid-cols-[1fr_auto]">
+          <textarea className="input min-h-20 resize-y text-xs" value={customization} onChange={e=>setCustomization(e.target.value)} placeholder="Describe the change in plain English, for example: Use SQL Server instead of PostgreSQL because our company already operates SQL Server."/>
+          <div className="flex gap-2 md:flex-col"><button className="btn btn-primary" disabled={working||!customization.trim()} onClick={()=>void generateOptions(customization)}>Re-evaluate options</button><button className="btn" onClick={()=>setCustomizing(false)}>Cancel</button></div>
+        </div>}
+        <p className="mt-2 text-[11px] leading-5 text-slate-600">Customization is treated as an engineering constraint. DSpec regenerates the complete approaches so compatibility and tradeoffs are reconsidered rather than silently swapping one component.</p>
+      </div>
+    </>}
+  </section>;
+}
+
+function ExecutionStrategyPanel({session,onChanged}:{session:Session;onChanged:()=>Promise<void>}){
+  const existing=session.execution_plan??null;
+  const [bundle,setBundle]=useState<ExecutionEstimateBundle|null>(existing?.plans?existing:null);
+  const initialBudget=existing?.budget;
+  const initialChoice=initialBudget===10?"10":initialBudget===25?"25":initialBudget===50?"50":typeof initialBudget==="number"?"custom":"none";
+  const [budgetChoice,setBudgetChoice]=useState(initialChoice);
+  const [customBudget,setCustomBudget]=useState(typeof initialBudget==="number"&&![10,25,50].includes(initialBudget)?String(initialBudget):"");
+  const [escalation,setEscalation]=useState<"automatic"|"ask_first">(existing?.escalation??"automatic");
+  const [budgetBehavior,setBudgetBehavior]=useState<"stop_before_exceeding"|"ask_before_overage"|"no_enforcement">(existing?.budget_behavior??"stop_before_exceeding");
+  const [settingsDirty,setSettingsDirty]=useState(false);
+  const [working,setWorking]=useState(false);
+  const [err,setErr]=useState("");
+
+  useEffect(()=>{
+    const next=session.execution_plan;
+    if(next?.plans)setBundle(next);
+  },[session.id,session.execution_plan?.source_snapshot_sha256,session.execution_plan?.status]);
+
+  if(!session.specs.tasks){
+    return <section className="panel mb-4 p-4">
+      <div className="font-semibold">Plan AI implementation cost</div>
+      <p className="mt-1 text-sm leading-6 text-slate-500">After the Tasks are saved, DSpec can classify the work and compare cost-optimized, balanced, and maximum-capability model strategies at the project level.</p>
+    </section>;
+  }
+
+  const effectiveBudget=budgetChoice==="none"?null:budgetChoice==="custom"?(customBudget.trim()?Number(customBudget):null):Number(budgetChoice);
+  const validBudget=effectiveBudget===null||(Number.isFinite(effectiveBudget)&&effectiveBudget>=0);
+  const strategies:StrategyName[]=["cost_optimized","balanced","maximum_capability"];
+  const descriptions:Record<StrategyName,{summary:string;tradeoff:string}>={
+    cost_optimized:{summary:"Uses local or lower-cost models wherever they meet the task's minimum safe capability, and reserves stronger cloud models for work that actually needs them.",tradeoff:"Lowest expected API spend, with escalation when cheaper models are not sufficient."},
+    balanced:{summary:"Applies stronger models earlier to moderately difficult or ambiguous work while still using local models where the fit is clear.",tradeoff:"Higher API cost in exchange for more reasoning headroom and potentially fewer retries."},
+    maximum_capability:{summary:"Uses the strongest configured eligible model for most substantive work.",tradeoff:"Highest reasoning capability, but expensive models may perform work that cheaper models could safely handle."},
+  };
+
+  function markDirty(){setSettingsDirty(true);}
+
+  async function estimate(){
+    if(!validBudget)return;
+    setWorking(true);setErr("");
+    try{
+      const result=await api<ExecutionEstimateBundle>("/api/execution/estimate",{
+        method:"POST",
+        body:JSON.stringify({
+          session_id:session.id,
+          budget:effectiveBudget,
+          escalation,
+          budget_behavior:budgetBehavior,
+        }),
+      });
+      setBundle(result);setSettingsDirty(false);
+      await onChanged();
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  async function choose(strategy:StrategyName){
+    if(settingsDirty)return;
+    setWorking(true);setErr("");
+    try{
+      const result=await api<ExecutionEstimateBundle>("/api/execution/select",{
+        method:"POST",
+        body:JSON.stringify({session_id:session.id,strategy}),
+      });
+      setBundle(result);
+      await onChanged();
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  function money(value:number|null|undefined){return value===null||value===undefined?"UNKNOWN":`${value.toFixed(2)}`;}
+
+  return <section className="panel mb-4 overflow-hidden">
+    <div className="border-b border-slate-800 p-4">
+      <div className="font-semibold">Implementation strategy & cloud budget</div>
+      <p className="mt-1 max-w-5xl text-sm leading-6 text-slate-500">DSpec estimates the project-level model mix and cloud API cost before you choose how implementation work should be routed. Cost Optimized is the default recommendation.</p>
+    </div>
+
+    <div className="grid gap-4 border-b border-slate-800 p-4 lg:grid-cols-3">
+      <div>
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Cloud budget</div>
+        <select className="input" value={budgetChoice} onChange={e=>{setBudgetChoice(e.target.value);markDirty();}}>
+          <option value="none">No limit</option><option value="10">$10</option><option value="25">$25</option><option value="50">$50</option><option value="custom">Custom</option>
+        </select>
+        {budgetChoice==="custom"&&<input className="input mt-2" type="number" min="0" step="1" value={customBudget} onChange={e=>{setCustomBudget(e.target.value);markDirty();}} placeholder="Maximum cloud API spend"/>}
+        {!validBudget&&<div className="mt-1 text-[11px] text-rose-300">Enter a valid non-negative budget.</div>}
+      </div>
+      <div>
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">If a cheaper model is not sufficient</div>
+        <label className="mb-1.5 flex cursor-pointer gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400"><input type="radio" checked={escalation==="automatic"} onChange={()=>{setEscalation("automatic");markDirty();}}/><span><span className="text-slate-200">Automatically escalate — Recommended</span><span className="mt-0.5 block text-[11px] text-slate-600">Move the task to the next safe capability tier.</span></span></label>
+        <label className="flex cursor-pointer gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400"><input type="radio" checked={escalation==="ask_first"} onChange={()=>{setEscalation("ask_first");markDirty();}}/><span><span className="text-slate-200">Ask me first</span><span className="mt-0.5 block text-[11px] text-slate-600">Stop before switching to a more expensive model.</span></span></label>
+      </div>
+      <div>
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Budget behavior</div>
+        <select className="input" value={budgetBehavior} onChange={e=>{setBudgetBehavior(e.target.value as typeof budgetBehavior);markDirty();}}>
+          <option value="stop_before_exceeding">Stop before exceeding — Recommended</option>
+          <option value="ask_before_overage">Ask before any overage</option>
+          <option value="no_enforcement">No budget enforcement</option>
+        </select>
+        <div className="mt-2 rounded-lg border border-amber-500/15 bg-amber-500/5 p-2 text-[11px] leading-5 text-amber-100/75">Budget controls may pause paid work, but they never route a task below its minimum safe model capability.</div>
+      </div>
+    </div>
+
+    <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+      <div className="text-xs text-slate-500">{bundle&&!settingsDirty?"Estimate reflects the controls above.":bundle?"Controls changed — recalculate before choosing a strategy.":"Generate one project-level estimate for all three strategies."}</div>
+      <button className="btn btn-primary shrink-0" disabled={working||!validBudget} onClick={()=>void estimate()}>{working?<LoaderCircle className="mr-1 inline h-4 w-4 animate-spin"/>:<Sparkles className="mr-1 inline h-4 w-4"/>}{bundle?"Recalculate":"Estimate implementation"}</button>
+    </div>
+
+    {err&&<div className="mx-4 mt-4 rounded-lg border border-rose-500/25 bg-rose-500/8 p-3 text-xs text-rose-200">{err}</div>}
+    {bundle&&<div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-3">
+      {strategies.map(strategy=>{
+        const plan=bundle.plans[strategy];
+        if(!plan)return null;
+        const recommended=strategy===bundle.recommended_strategy;
+        const selected=strategy===bundle.selected_strategy;
+        const cost=plan.cloud_api_cost_estimate;
+        return <article key={strategy} className={`flex flex-col rounded-xl border p-4 ${recommended?"border-indigo-400/40 bg-indigo-500/7":"border-slate-800 bg-slate-950/25"}`}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="text-base font-semibold text-slate-100">{plan.strategy_label}</div>
+            {recommended&&<span className="rounded-full bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-300">Recommended</span>}
+          </div>
+          <div className="mt-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">What this means for you</div>
+            <p className="mt-1 text-sm leading-6 text-slate-300">{descriptions[strategy].summary}</p>
+          </div>
+          <div className="mt-3 text-xs leading-5 text-slate-500">{descriptions[strategy].tradeoff}</div>
+
+          <div className="mt-4 rounded-lg bg-slate-900/70 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Estimated model mix</div>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+              <div><div className="text-lg font-semibold text-slate-200">{plan.model_mix.local.percent}%</div><div className="text-[10px] text-slate-600">Local</div></div>
+              <div><div className="text-lg font-semibold text-slate-200">{plan.model_mix.standard.percent}%</div><div className="text-[10px] text-slate-600">Standard</div></div>
+              <div><div className="text-lg font-semibold text-slate-200">{plan.model_mix.advanced.percent}%</div><div className="text-[10px] text-slate-600">Advanced</div></div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-slate-800 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Estimated cloud API cost</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-100">{money(cost.expected)}</div>
+            <div className="mt-1 text-[11px] text-slate-600">Range {money(cost.low)} – {money(cost.high)}</div>
+            {plan.budget_status!=="NO_LIMIT"&&plan.budget_status!=="WITHIN_EXPECTED"&&<div className="mt-2 text-[11px] leading-4 text-amber-300">Budget status: {plan.budget_status.replaceAll("_"," ").toLowerCase()}</div>}
+            {!!plan.blocked_task_count&&<div className="mt-2 text-[11px] leading-4 text-rose-300">{plan.blocked_task_count} task(s) have no configured model meeting the minimum safe capability.</div>}
+          </div>
+
+          <details className="mt-3 rounded-lg border border-slate-800">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-300">How this estimate works</summary>
+            <div className="border-t border-slate-800 p-3">{plan.estimate_assumptions.map(item=><div key={item} className="mb-1 text-[11px] leading-5 text-slate-500">• {item}</div>)}</div>
+          </details>
+
+          <button className={`btn mt-4 w-full ${recommended?"btn-primary":""}`} disabled={working||settingsDirty||selected} onClick={()=>void choose(strategy)}>{selected?"Selected":"Use this strategy"}</button>
+        </article>;
+      })}
+    </div>}
+  </section>;
+}
+
 function EmptyState({onCreate}:{onCreate:()=>void}){
   return <div className="panel grid min-h-[540px] place-items-center p-10 text-center"><div><ShieldCheck className="mx-auto mb-4 h-10 w-10 text-indigo-300"/><h2 className="text-xl font-semibold">Create a governed DSpec project</h2><p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-slate-500">Move from product intent through Constitution, Requirements, Solution and executable Tasks while preserving explicit review and approval state.</p><button className="btn btn-primary mt-5" onClick={onCreate}>Create project</button></div></div>
 }
