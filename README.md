@@ -2,7 +2,7 @@
 
 DSpec AI is a local, spec-first workspace that turns product intent into a governed four-tier software specification and downstream coding-agent handoff.
 
-**Prototype:** 0.1.2 candidate  
+**Prototype:** 0.1.3 candidate  
 **Runtime:** `http://127.0.0.1:3210`  
 **Lifecycle:** explicit manual start/stop only  
 **Change:** `DS-CHG-001-dspec-ai-prototype`
