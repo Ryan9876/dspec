@@ -108,7 +108,7 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of architectural completeness.")
 
     class SpecToTasks(dspy.Signature):
-        """Create ordered, executable work packages derived from requirements and solution. Each material task must map to requirement IDs, name exact implementation scope, dependencies, preservation constraints, and a concrete terminal verification command or objective assertion. Tasks must not create new product scope."""
+        """Create ordered, executable work packages derived from requirements and solution. Give every material task a stable T-### identifier. Each material task must map to requirement IDs, name exact implementation scope, dependencies, preservation constraints, and a concrete terminal verification command or objective assertion. Tasks must not create new product scope. Keep tasks granular enough that downstream capability/risk classification can route work without rewriting the canonical task."""
         constitution_context: str = dspy.InputField(desc="Governing constraints.")
         requirements_spec: str = dspy.InputField(desc="Required behavior and acceptance criteria.")
         solution_spec: str = dspy.InputField(desc="Approved implementation direction.")
