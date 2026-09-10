@@ -14,6 +14,8 @@ DSpec AI is a local, spec-first workspace that turns product intent into a gover
 - Transactional SQLite persistence with WAL for projects, discovery answers, revisions, review results, and settings.
 - Monaco specification editing with debounced local autosave plus explicit Save.
 - Formal DSPy signatures for all four tiers and contextual MCQ gap discovery.
+- Root product-intent changes retire stale active discovery/drafts/spec authority while preserving formal revision history.
+- Discovery uses active-only bounded context and a 900-token task-specific completion budget; no unbounded retry path is used.
 - `dspy.Refine` bounded self-correction using the deterministic DSpec quality metric and a 0.90 threshold.
 - Provider-backed provisional stage streaming during Refine; reasoning/feedback fields stay internal and only the final Refine-selected result is persisted.
 - Provider switcher for LM Studio, Ollama, OpenAI, and Anthropic without backend restart.
