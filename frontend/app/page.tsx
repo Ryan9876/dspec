@@ -129,7 +129,7 @@ export default function Home(){
     window.addEventListener("pagehide",persist);
     document.addEventListener("visibilitychange",onVisibility);
     return ()=>{window.removeEventListener("pagehide",persist);document.removeEventListener("visibilitychange",onVisibility);};
-  },[session?.id,stage,draft]);
+  },[session?.id,session?.intent_context_sha256,stage,draft]);
 
   const current=session?.specs[stage];
 
