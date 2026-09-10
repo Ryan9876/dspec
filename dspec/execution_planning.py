@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -418,7 +417,7 @@ def render_execution_views(plan: dict[str, Any]) -> dict[str, str]:
             "",
             "> Derived execution view. The canonical DSpec requirements, solution, and tasks remain authoritative.",
             "",
-            f"Source snapshot: \`{plan.get('source_snapshot_sha256') or 'UNKNOWN'}\`",
+            f"Source snapshot: `{plan.get('source_snapshot_sha256') or 'UNKNOWN'}`",
             "",
         ]
         if not items:
