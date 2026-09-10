@@ -31,7 +31,11 @@ type Review = {
   semantic_status?: "PASS"|"FAIL"|"NOT TESTED"|string;
   semantic_error?: string;
 };
-type DiscoveryOption = { id:string; label:string; rationale:string };
+type DiscoveryOption = {
+  id:string; label:string; rationale:string; plain_english_consequence?:string|null;
+  advantages?:string[]; tradeoffs?:string[]; engineering_concept?:EngineeringConcept|null;
+  technical_details?:TechnicalDetail[];
+};
 type DiscoveryQuestion = {
   id:string; question:string; why_it_matters:string; options:DiscoveryOption[];
   recommended_option_id:string; allow_free_text:boolean;
@@ -840,7 +844,7 @@ function DynamicQuestion({question,saved,onSave}:{question:DiscoveryQuestion;sav
   return <div className="rounded-xl border border-indigo-400/15 bg-indigo-500/5 p-3">
     <div className="text-sm font-semibold text-slate-200">{question.question}</div>
     <div className="mt-1 text-[11px] leading-4 text-slate-500">{question.why_it_matters}</div>
-    <div className="mt-2 space-y-1.5">{question.options.map(o=><label key={o.id} className="block cursor-pointer rounded-lg border border-slate-800 p-2 text-xs hover:border-slate-700"><span className="flex items-start gap-2"><input className="mt-0.5" type="radio" checked={choice===o.id} onChange={()=>{setChoice(o.id);setSavedState(false)}}/><span><span className="text-slate-300">{o.label}{o.id===question.recommended_option_id&&<span className="ml-1 text-cyan-300">Recommended</span>}</span><span className="mt-0.5 block text-[11px] leading-4 text-slate-600">{o.rationale}</span></span></span></label>)}</div>
+    <div className="mt-2 space-y-1.5">{question.options.map(o=><label key={o.id} className="block cursor-pointer rounded-lg border border-slate-800 p-2 text-xs hover:border-slate-700"><span className="flex items-start gap-2"><input className="mt-0.5" type="radio" checked={choice===o.id} onChange={()=>{setChoice(o.id);setSavedState(false)}}/><span><span className="text-slate-300">{o.label}{o.id===question.recommended_option_id&&<span className="ml-1 text-cyan-300">Recommended</span>}</span><span className="mt-0.5 block text-[11px] leading-4 text-slate-600">{o.plain_english_consequence??o.rationale}</span>{o.plain_english_consequence&&<span className="mt-1 block text-[11px] leading-4 text-slate-500">{o.rationale}</span>}{(o.engineering_concept||o.technical_details?.length)?<details className="mt-2 rounded border border-slate-800 bg-slate-950/40 p-2"><summary className="cursor-pointer text-[11px] font-medium text-slate-400">Engineering principle & technical details</summary>{o.engineering_concept&&<span className="mt-2 block text-[11px] leading-4 text-cyan-200/80"><b>{o.engineering_concept.label}:</b> {o.engineering_concept.mental_model}</span>}{o.technical_details?.map((detail,index)=><span key={`${index}-${detail.category}`} className="mt-2 block text-[11px] leading-4 text-slate-500"><b className="text-slate-400">{detail.category} — {detail.choice}:</b> {detail.consequence}</span>)}</details>:null}</span></span></label>)}</div>
     {question.allow_free_text&&<textarea className="input mt-2 min-h-16 text-xs" value={text} onChange={e=>{setText(e.target.value);setSavedState(false)}} placeholder="Optional context or alternative…"/>}
     <button className="btn mt-2 w-full" onClick={async()=>{await onSave(question.id,choice??"",text);setSavedState(true)}}>{savedState?"Saved":"Save answer"}</button>
   </div>
