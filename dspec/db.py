@@ -326,6 +326,8 @@ def save_spec(session_id: str, stage: str, content: str, quality_score: float = 
             content=excluded.content, updated_at=excluded.updated_at""",
             (session_id, stage, content, now),
         )
+        if stage in {"requirements", "solution", "tasks"}:
+            conn.execute("DELETE FROM execution_plans WHERE session_id=?", (session_id,))
         conn.execute("UPDATE project_sessions SET updated_at=? WHERE id=?", (now, session_id))
     return get_session(session_id)["specs"][stage]
 
