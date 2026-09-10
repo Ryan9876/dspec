@@ -157,7 +157,8 @@ class SpecEngine:
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
-    @staticmethod\n    def _prior(session: dict[str, Any], stage: str) -> str:
+    @staticmethod
+    def _prior(session: dict[str, Any], stage: str) -> str:
         parts: list[str] = []
         for current in db.STAGES:
             if current == stage:
