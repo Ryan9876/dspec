@@ -36,6 +36,7 @@ _SIGNATURES = {
 }
 
 DISCOVERY_MAX_OUTPUT_TOKENS = 900
+DISCOVERY_MAX_INTENT_CHARS = 2000
 DISCOVERY_MAX_PRIOR_CHARS = 6000
 DISCOVERY_MAX_ANSWERS_CHARS = 2500
 DISCOVERY_MAX_DRAFT_CHARS = 4000
@@ -139,26 +140,62 @@ class SpecEngine:
 
     def _discovery_inputs(self, session: dict[str, Any], stage: str) -> dict[str, str]:
         self.validate_input(session, stage)
-        answers = self._answers(session, stage)
+        answers = self._answers(
+            session,
+            stage,
+            {"assistant-constitution"} if stage == "constitution" else None,
+        )
         current = (
             session.get("drafts", {}).get(stage, {}).get("content")
             or session.get("specs", {}).get(stage, {}).get("content", "")
         )
+
+        parts: list[str] = []
+        if stage == "constitution":
+            root = next(
+                (
+                    answer for answer in session.get("answers", [])
+                    if answer.get("stage") == "constitution"
+                    and answer.get("question_id") == "assistant-constitution"
+                ),
+                None,
+            )
+            parts.extend(
+                [
+                    "Project intent:\n"
+                    + self._clip_context(
+                        self._project_intent(session),
+                        DISCOVERY_MAX_INTENT_CHARS,
+                    ),
+                    "Operating boundary:\n"
+                    + str(root.get("selected_option_id") or "Recommend a safe default")
+                    if root
+                    else "Operating boundary:\nRecommend a safe default",
+                ]
+            )
+
+        if answers != "No saved discovery answers for this stage.":
+            parts.append(
+                "Active saved decisions:\n"
+                + self._clip_context(answers, DISCOVERY_MAX_ANSWERS_CHARS)
+            )
+
+        parts.append(
+            "Current active draft:\n"
+            + (
+                self._clip_context(current, DISCOVERY_MAX_DRAFT_CHARS)
+                if current
+                else "No active draft."
+            )
+        )
+
         return {
             "stage": stage,
             "prior_tiers": self._clip_context(
                 self._prior(session, stage),
                 DISCOVERY_MAX_PRIOR_CHARS,
             ),
-            "current_answers": (
-                self._clip_context(answers, DISCOVERY_MAX_ANSWERS_CHARS)
-                + "\n\nCurrent active draft:\n"
-                + (
-                    self._clip_context(current, DISCOVERY_MAX_DRAFT_CHARS)
-                    if current
-                    else "No active draft."
-                )
-            ),
+            "current_answers": "\n\n".join(parts),
         }
 
     def validate_input(self, session: dict[str, Any], stage: str) -> None:
