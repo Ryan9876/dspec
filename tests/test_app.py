@@ -4,12 +4,14 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
 from dspec import db
 from dspec.app import app, engine
+import dspec.spec_engine as spec_engine_module
 from dspec.quality import evaluate
 
 
@@ -632,3 +634,274 @@ def test_assist_persists_generated_question_context(client: TestClient, monkeypa
     context = next(item for item in session["answers"] if item["question_id"] == "discovery-context-constitution")
     payload = json.loads(context["free_text_payload"])
     assert payload["questions"][0]["options"][0]["label"] == "Yes, manual export"
+
+
+
+def _save_root_intent(
+    client: TestClient,
+    sid: str,
+    *,
+    choice: str = "Recommend a safe default",
+    text: str = "Create a simple number generator",
+):
+    return client.post(
+        "/api/answers",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "question_id": "assistant-constitution",
+            "selected_option_id": choice,
+            "free_text_payload": text,
+        },
+    )
+
+
+def test_root_intent_change_retires_active_context_preserves_history_and_blocks_stale_writes(
+    client: TestClient,
+):
+    sid = create_session(client, "intent-reset")
+
+    first = _save_root_intent(client, sid)
+    assert first.status_code == 200
+    assert first.json()["intent_invalidated"] is False
+    session = client.get(f"/api/sessions/{sid}").json()
+    old_intent_hash = session["intent_context_sha256"]
+
+    assert client.post(
+        "/api/answers",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "question_id": "old-choice",
+            "selected_option_id": "board",
+            "free_text_payload": "Use the stale board model.",
+        },
+    ).status_code == 200
+    assert client.post(
+        "/api/spec/save",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "content": DRAFTS["constitution"],
+            "expected_intent_sha256": old_intent_hash,
+        },
+    ).status_code == 200
+    assert client.post(
+        "/api/spec/save",
+        json={
+            "session_id": sid,
+            "stage": "requirements",
+            "content": DRAFTS["requirements"],
+            "expected_intent_sha256": old_intent_hash,
+        },
+    ).status_code == 200
+
+    same = _save_root_intent(client, sid)
+    assert same.status_code == 200
+    assert same.json()["intent_invalidated"] is False
+    same_session = client.get(f"/api/sessions/{sid}").json()
+    assert "constitution" in same_session["specs"]
+    assert "requirements" in same_session["specs"]
+
+    changed = _save_root_intent(
+        client,
+        sid,
+        text="Create a simple dice roller for one local user",
+    )
+    assert changed.status_code == 200
+    assert changed.json()["intent_invalidated"] is True
+    assert changed.json()["invalidated_stages"] == [
+        "constitution",
+        "requirements",
+        "solution",
+        "tasks",
+    ]
+
+    session = client.get(f"/api/sessions/{sid}").json()
+    new_intent_hash = session["intent_context_sha256"]
+    assert new_intent_hash != old_intent_hash
+    assert session["specs"] == {}
+    assert session["drafts"] == {}
+    assert [answer["question_id"] for answer in session["answers"]] == [
+        "assistant-constitution"
+    ]
+    assert session["answers"][0]["free_text_payload"] == "Create a simple dice roller for one local user"
+
+    with db.connect() as conn:
+        historical = conn.execute(
+            "SELECT spec_type,content FROM spec_documents WHERE session_id=? ORDER BY spec_type",
+            (sid,),
+        ).fetchall()
+    assert {row["spec_type"] for row in historical} == {"constitution", "requirements"}
+
+    stale = client.post(
+        "/api/spec/draft",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "content": "stale in-flight editor write",
+            "expected_intent_sha256": old_intent_hash,
+        },
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["error"] == "project_state_changed"
+
+    fresh = client.post(
+        "/api/spec/draft",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "content": "fresh post-reset draft",
+            "expected_intent_sha256": new_intent_hash,
+        },
+    )
+    assert fresh.status_code == 200
+
+    fresh_spec = client.post(
+        "/api/spec/save",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "content": DRAFTS["constitution"],
+            "expected_intent_sha256": new_intent_hash,
+        },
+    )
+    assert fresh_spec.status_code == 200
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["specs"]["constitution"]["revision_number"] == 2
+
+
+def test_operating_boundary_change_invalidates_active_state(client: TestClient):
+    sid = create_session(client, "intent-boundary-reset")
+    first = _save_root_intent(
+        client,
+        sid,
+        choice="Local-first / private by default",
+        text="Create a simple number generator",
+    )
+    assert first.status_code == 200
+    session = client.get(f"/api/sessions/{sid}").json()
+    intent_hash = session["intent_context_sha256"]
+
+    assert client.post(
+        "/api/spec/save",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "content": DRAFTS["constitution"],
+            "expected_intent_sha256": intent_hash,
+        },
+    ).status_code == 200
+
+    changed = _save_root_intent(
+        client,
+        sid,
+        choice="Cloud-capable with explicit consent",
+        text="Create a simple number generator",
+    )
+    assert changed.status_code == 200
+    assert changed.json()["intent_invalidated"] is True
+    session = client.get(f"/api/sessions/{sid}").json()
+    assert session["specs"] == {}
+
+
+def test_discovery_inputs_after_intent_reset_exclude_stale_answers_and_drafts(
+    client: TestClient,
+):
+    sid = create_session(client, "discovery-clean-context")
+    _save_root_intent(client, sid, text="Build the old product")
+    session = client.get(f"/api/sessions/{sid}").json()
+    old_hash = session["intent_context_sha256"]
+
+    assert client.post(
+        "/api/answers",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "question_id": "old-choice",
+            "selected_option_id": "opt_gov_board",
+            "free_text_payload": "STALE GOVERNING BOARD",
+        },
+    ).status_code == 200
+    assert client.post(
+        "/api/spec/draft",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "content": "STALE DRAFT " * 600,
+            "expected_intent_sha256": old_hash,
+        },
+    ).status_code == 200
+
+    _save_root_intent(client, sid, text="Create a simple number generator")
+    session = client.get(f"/api/sessions/{sid}").json()
+    inputs = engine._discovery_inputs(session, "constitution")
+
+    assert "Create a simple number generator" in inputs["current_answers"]
+    assert "opt_gov_board" not in inputs["current_answers"]
+    assert "STALE GOVERNING BOARD" not in inputs["current_answers"]
+    assert "STALE DRAFT" not in inputs["current_answers"]
+
+
+def test_discovery_uses_bounded_budget_and_reports_diagnostics(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import dspy
+
+    sid = create_session(client, "discovery-budget")
+    _save_root_intent(client, sid, text="Create a simple number generator")
+    session = client.get(f"/api/sessions/{sid}").json()
+
+    selected = {"provider": "lm_studio", "model": "fixture-model"}
+    lm_calls: list[dict[str, object]] = []
+
+    async def fake_selected(_gateway):
+        return selected
+
+    def fake_make_lm(provider, model, **kwargs):
+        lm_calls.append({"provider": provider, "model": model, **kwargs})
+        return dspy.LM("openai/fixture-model", api_key="fixture")
+
+    async def fake_run(**inputs):
+        assert len(inputs["prior_tiers"]) <= spec_engine_module.DISCOVERY_MAX_PRIOR_CHARS + 80
+        assert len(inputs["current_answers"]) <= (
+            spec_engine_module.DISCOVERY_MAX_ANSWERS_CHARS
+            + spec_engine_module.DISCOVERY_MAX_DRAFT_CHARS
+            + 120
+        )
+        return SimpleNamespace(
+            discovery={
+                "gaps_found": ["Range is not specified."],
+                "questions": [
+                    {
+                        "id": "range",
+                        "question": "What number range should be used?",
+                        "why_it_matters": "It defines the generator output.",
+                        "options": [
+                            {"id": "1-10", "label": "1 to 10", "rationale": "Simple default."},
+                            {"id": "1-100", "label": "1 to 100", "rationale": "Broader range."},
+                        ],
+                        "recommended_option_id": "1-10",
+                        "allow_free_text": True,
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(spec_engine_module, "selected_for_inference", fake_selected)
+    monkeypatch.setattr(spec_engine_module, "make_lm", fake_make_lm)
+    monkeypatch.setattr(dspy, "asyncify", lambda _program: fake_run)
+
+    result = __import__("asyncio").run(engine.discover(session, "constitution"))
+
+    assert lm_calls == [{
+        "provider": "lm_studio",
+        "model": "fixture-model",
+        "max_tokens": spec_engine_module.DISCOVERY_MAX_OUTPUT_TOKENS,
+        "temperature": 0.0,
+    }]
+    assert result["diagnostics"]["provider"] == "lm_studio"
+    assert result["diagnostics"]["model"] == "fixture-model"
+    assert result["diagnostics"]["max_output_tokens"] == spec_engine_module.DISCOVERY_MAX_OUTPUT_TOKENS
+    assert result["diagnostics"]["request_latency_ms"] >= 0
