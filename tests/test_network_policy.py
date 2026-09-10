@@ -81,3 +81,38 @@ def test_dspy_runtime_rejects_remote_local_override(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("DSPEC_LM_STUDIO_URL", "http://remote.example:1234")
     with pytest.raises(ValueError, match="loopback-only"):
         make_lm("lm_studio", "fixture-model")
+
+
+
+def test_openai_reasoning_model_uses_bounded_native_completion_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import dspy
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_lm(model: str, **kwargs):
+        calls.append((model, kwargs))
+        return object()
+
+    monkeypatch.setattr("dspec.dspy_runtime.load_api_key", lambda provider: "fixture-key")
+    monkeypatch.setattr(dspy, "LM", fake_lm)
+
+    make_lm(
+        "openai",
+        "gpt-5-mini",
+        max_tokens=900,
+        temperature=0.0,
+        num_retries=1,
+    )
+
+    assert calls == [
+        (
+            "openai/gpt-5-mini",
+            {
+                "api_key": "fixture-key",
+                "max_completion_tokens": 900,
+                "num_retries": 1,
+            },
+        )
+    ]
