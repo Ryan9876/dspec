@@ -521,11 +521,19 @@ class SpecEngine:
         selected = await selected_for_inference(self.gateway)
         lm = make_lm(selected["provider"], selected["model"], max_tokens=1400, temperature=0.0)
         program = dspy.Predict(DiscoverSpecGaps)
-        current = session.get("specs", {}).get(stage, {}).get("content", "")
+        current = session.get("drafts", {}).get(stage, {}).get("content") or session.get("specs", {}).get(stage, {}).get("content", "")
+        prior = self._prior(session, stage)
+        if len(prior) > 6000:
+            prior = prior[:6000].rstrip() + "\n\n[DSpec context truncated]"
+        answers = self._answers(session, stage)
+        if len(answers) > 2500:
+            answers = answers[:2500].rstrip() + "\n\n[DSpec context truncated]"
+        if len(current) > 4000:
+            current = current[:4000].rstrip() + "\n\n[DSpec context truncated]"
         inputs = {
             "stage": stage,
-            "prior_tiers": self._prior(session, stage),
-            "current_answers": f"{self._answers(session, stage)}\n\nCurrent draft:\n{current or 'No current draft.'}",
+            "prior_tiers": prior,
+            "current_answers": f"{answers}\n\nCurrent active draft:\n{current or 'No active draft.'}",
         }
         with dspy.context(lm=lm):
             result = await dspy.asyncify(program)(**inputs)
