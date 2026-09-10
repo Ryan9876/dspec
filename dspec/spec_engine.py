@@ -562,6 +562,7 @@ class SpecEngine:
             selected["model"],
             max_tokens=DISCOVERY_MAX_OUTPUT_TOKENS,
             temperature=0.0,
+            num_retries=1,
         )
         program = dspy.Predict(DiscoverSpecGaps)
         started = time.perf_counter()
