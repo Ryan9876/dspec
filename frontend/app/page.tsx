@@ -166,7 +166,10 @@ export default function Home(){
 
   async function saveAssistant(questionId:string, choice:string, text:string){
     if(!session)return;
-    await api("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
+    const result=await api<{saved:boolean;intent_invalidated?:boolean}>("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
+    if(result.intent_invalidated){
+      window.alert("Project intent changed. Previous active discovery answers and drafts were retired; prior formal specs remain history only.");
+    }
     await loadSession(session.id);
   }
 
