@@ -900,6 +900,7 @@ def test_discovery_uses_bounded_budget_and_reports_diagnostics(
         "model": "fixture-model",
         "max_tokens": spec_engine_module.DISCOVERY_MAX_OUTPUT_TOKENS,
         "temperature": 0.0,
+        "num_retries": 1,
     }]
     assert result["diagnostics"]["provider"] == "lm_studio"
     assert result["diagnostics"]["model"] == "fixture-model"
