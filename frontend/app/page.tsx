@@ -14,6 +14,7 @@ type Session = {
   id: string;
   bundle_name: string;
   project_type: string;
+  intent_context_sha256: string;
   specs: Partial<Record<Stage, {
     id: string; content: string; revision_number: number; version_number: number;
     quality_score: number; approval_status: string; review: Review;
@@ -88,6 +89,7 @@ export default function Home(){
   const [recovery,setRecovery]=useState<RecoveryPrompt|null>(null);
   const [auditOpen,setAuditOpen]=useState(false);
   const [error,setError]=useState<string|null>(null);
+  const [notice,setNotice]=useState<string|null>(null);
   const [draft,setDraft]=useState("");
   const [streamText,setStreamText]=useState("");
   const [streamAttempt,setStreamAttempt]=useState<number|null>(null);
@@ -117,7 +119,7 @@ export default function Home(){
   useEffect(()=>{
     if(!session||!draft.trim())return;
     const persist=()=>{
-      const body=JSON.stringify({session_id:session.id,stage,content:draft});
+      const body=JSON.stringify({session_id:session.id,stage,content:draft,expected_intent_sha256:session.intent_context_sha256});
       const blob=new Blob([body],{type:"application/json"});
       if(!navigator.sendBeacon("/api/spec/draft",blob)){
         void fetch("/api/spec/draft",{method:"POST",headers:{"Content-Type":"application/json"},body,keepalive:true});
@@ -144,7 +146,7 @@ export default function Home(){
   async function saveDraft(content=draft){
     if(!session||!content.trim())return false;
     try{
-      const saved=await api<{content:string;review:Review}>("/api/spec/save",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content})});
+      const saved=await api<{content:string;review:Review}>("/api/spec/save",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content,expected_intent_sha256:session.intent_context_sha256})});
       setReview(saved.review??{}); await loadSession(session.id);
       return true;
     }catch(e){
@@ -155,7 +157,7 @@ export default function Home(){
 
   async function saveDraftBuffer(content:string){
     if(!session)return;
-    await api("/api/spec/draft",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content})});
+    await api("/api/spec/draft",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content,expected_intent_sha256:session.intent_context_sha256})});
   }
 
   function draftChanged(value:string|undefined){
@@ -166,9 +168,12 @@ export default function Home(){
 
   async function saveAssistant(questionId:string, choice:string, text:string){
     if(!session)return;
-    const result=await api<{saved:boolean;intent_invalidated?:boolean}>("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
+    const result=await api<{saved:boolean;intent_invalidated?:boolean;invalidated_stages?:Stage[]}>("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
     if(result.intent_invalidated){
-      window.alert("Project intent changed. Previous active discovery answers and drafts were retired; prior formal specs remain history only.");
+      if(saveTimer.current){ clearTimeout(saveTimer.current); saveTimer.current=null; }
+      setDraft("");
+      setReview({});
+      setNotice("Project intent changed. Previous active discovery answers and drafts were retired; prior formal specs remain available as history only.");
     }
     await loadSession(session.id);
   }
@@ -379,6 +384,7 @@ export default function Home(){
 
       <section className="min-w-0">
         {error&&<div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1 break-words">{error}</div><button onClick={()=>setError(null)}>×</button></div>}
+        {notice&&<div className="mb-4 flex items-start gap-2 rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-3 text-sm text-cyan-100"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1">{notice}</div><button onClick={()=>setNotice(null)}>×</button></div>}
         {recovery&&!providerOpen&&<div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1"><div className="font-semibold">Generation interrupted</div><div className="mt-1 text-xs leading-5 text-amber-100/75">{recovery.statePreserved?"Saved project state is preserved. ":""}Choose a healthy local provider or configure/select a cloud fallback, then generate again.</div></div><button className="btn" onClick={()=>setProviderOpen(true)}>Switch provider</button></div>}
         {auditOpen?<AuditPanel/>:<>
           <div className="panel mb-4 flex items-center gap-1 p-2">
