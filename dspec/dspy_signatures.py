@@ -14,21 +14,21 @@ try:
         rubric_score: float = Field(ge=0.0, le=1.0, description="Semantic completeness estimate from 0.0 to 1.0.")
 
     class DiscoveryOption(BaseModel):
-        id: str
-        label: str
-        rationale: str
+        id: str = Field(max_length=48)
+        label: str = Field(max_length=80)
+        rationale: str = Field(max_length=140)
 
     class DiscoveryQuestion(BaseModel):
-        id: str
-        question: str
-        why_it_matters: str
-        options: list[DiscoveryOption]
-        recommended_option_id: str
+        id: str = Field(max_length=48)
+        question: str = Field(max_length=180)
+        why_it_matters: str = Field(max_length=220)
+        options: list[DiscoveryOption] = Field(min_length=2, max_length=3)
+        recommended_option_id: str = Field(max_length=48)
         allow_free_text: bool = True
 
     class DiscoveryResult(BaseModel):
-        questions: list[DiscoveryQuestion]
-        gaps_found: list[str]
+        questions: list[DiscoveryQuestion] = Field(max_length=3)
+        gaps_found: list[str] = Field(max_length=3)
 
     class SemanticReviewResult(BaseModel):
         score: float = Field(ge=0.0, le=1.0)
@@ -84,7 +84,7 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of the revised tier.")
 
     class DiscoverSpecGaps(dspy.Signature):
-        """Analyze the actual saved product input for the active DSpec stage. Ground every question in the supplied intent and prior-tier context. Ask only high-value questions whose answers materially improve completeness or reduce ambiguity, prefer 1-3 concise multiple-choice questions, include a recommended default with rationale, and preserve free-text expansion. Constitution questions must focus on purpose and non-negotiable product/operational/security/privacy boundaries; do not invent corporate boards, shareholders, market strategy, or enterprise governance unless the product intent calls for them. Requirements questions focus on user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred."""
+        """Return only a compact structured discovery result for the actual active product context. Do not narrate analysis. Report at most 3 material gaps and ask at most 3 material questions. Each question must offer 2-3 concise coherent options with one recommended default and short rationale. Ground every item in supplied intent and active prior-tier context. Constitution questions focus only on purpose and non-negotiable product/operational/security/privacy boundaries; never invent boards, shareholders, public APIs, compliance programs, accounts, cloud hosting, or enterprise governance unless the active product intent requires them. Requirements questions focus on observable user outcomes, domain behavior, failure/recovery, and exclusions. Solution questions focus on consequential technical constraints. Tasks questions focus on sequencing and verification. Do not ask implementation trivia that can safely be inferred and do not repeat already answered decisions."""
         stage: str = dspy.InputField(desc="constitution, requirements, solution, or tasks")
         prior_tiers: str = dspy.InputField(desc="Current prior-tier specifications, if any.")
         current_answers: str = dspy.InputField(desc="Saved discovery input and current draft context.")
