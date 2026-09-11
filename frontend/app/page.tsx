@@ -694,7 +694,7 @@ function ExecutionStrategyPanel({session,onChanged}:{session:Session;onChanged:(
     finally{setWorking(false);}
   }
 
-  function money(value:number|null|undefined){return value===null||value===undefined?"UNKNOWN":`${value.toFixed(2)}`;}
+  function money(value:number|null|undefined){return value===null||value===undefined?"UNKNOWN":`$${value.toFixed(2)}`;}
 
   return <section className="panel mb-4 overflow-hidden">
     <div className="border-b border-slate-800 p-4">
