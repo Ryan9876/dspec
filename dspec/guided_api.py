@@ -6,11 +6,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from . import db
-from .execution_planning import build_model_candidates, plan_execution, source_snapshot_sha256
+from .execution_planning import build_model_candidates, source_snapshot_sha256
 from .guided_engine import architecture_options, architecture_source_sha256, task_execution_profiles
+from .guided_routing import plan_guided_execution
 from .guided_store import (
     augment_session,
     get_execution_plan,
+    list_engineering_decisions,
     save_engineering_decision,
     save_execution_plan,
 )
@@ -88,6 +90,30 @@ def build_guided_router(gateway: ProviderGateway) -> APIRouter:
                 },
             ) from exc
 
+    @router.get("/api/decisions/architecture/{session_id}")
+    def current_architecture(session_id: str) -> dict[str, Any]:
+        session = _session_or_404(session_id)
+        decision = next(
+            (
+                item
+                for item in list_engineering_decisions(session_id)
+                if item.get("decision_type") == "architecture"
+                and item.get("decision_id") == "primary-stack"
+            ),
+            None,
+        )
+        if decision is None:
+            return {"status": "NOT_SET", "decision": None, "stale": False}
+        customization = str((decision.get("custom") or {}).get("instruction") or "")
+        current_source = architecture_source_sha256(session, customization)
+        stale = decision.get("source_context_sha256") != current_source or decision.get("status") != "selected"
+        return {
+            "status": "STALE" if stale else "SELECTED",
+            "decision": decision,
+            "stale": stale,
+            "current_source_context_sha256": current_source,
+        }
+
     @router.post("/api/decisions/architecture/select")
     def select_architecture(req: ArchitectureSelectRequest) -> dict[str, Any]:
         session = _session_or_404(req.session_id)
@@ -158,7 +184,7 @@ def build_guided_router(gateway: ProviderGateway) -> APIRouter:
             candidates = build_model_candidates(discovered, gateway.selected())
             source_sha = source_snapshot_sha256(session)
             plans = {
-                strategy: plan_execution(
+                strategy: plan_guided_execution(
                     profile_result["profiles"],
                     candidates,
                     strategy=strategy,
