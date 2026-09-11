@@ -142,14 +142,44 @@ def enrich_architecture_options(
     customization: str = "",
 ) -> dict[str, Any]:
     enriched = deepcopy(payload)
+    confidence = str(enriched.get("recommendation_confidence") or "unknown").strip().lower()
+    if confidence not in {"high", "medium", "low", "unknown"}:
+        confidence = "unknown"
+    enriched["recommendation_confidence"] = confidence
+    assumptions = [str(item).strip() for item in enriched.get("assumptions_unknowns") or [] if str(item).strip()]
+    if any(any(word in item.lower() for word in ("unknown", "missing", "unclear", "not provided")) for item in assumptions):
+        if confidence in {"high", "medium"}:
+            confidence = "low"
+            enriched["recommendation_confidence"] = confidence
+    summary = str(enriched.get("decision_summary") or "").strip()
+    confidence_line = f"Recommendation confidence: {confidence.upper()}."
+    unknown_line = " Assumptions/unknowns: " + "; ".join(assumptions) if assumptions else ""
+    if confidence_line.lower() not in summary.lower():
+        enriched["decision_summary"] = (summary + " " + confidence_line + unknown_line).strip()
+
     rows = enriched.get("options") or []
     for option in rows:
         if not isinstance(option, dict):
             continue
-        option["compatibility"] = validate_architecture_option(
+        compatibility = validate_architecture_option(
             option,
             constitution=constitution,
             requirements=requirements,
             customization=customization,
         )
+        option["compatibility"] = compatibility
+        base_summary = str(option.get("plain_english_summary") or "").strip()
+        cost = str(option.get("cost_level_or_range") or "UNKNOWN — insufficient cost evidence.").strip()
+        scale = str(option.get("scalability_flexibility") or "UNKNOWN — scalability/flexibility implications were not established.").strip()
+        option["plain_english_summary"] = (
+            f"{base_summary}\n\nCost / range — {cost}\nScalability / flexibility — {scale}"
+        ).strip()
+        impact = str(option.get("operational_impact") or "").strip()
+        if compatibility["issues"]:
+            impact += " Compatibility issue — " + " ".join(compatibility["issues"])
+        elif compatibility["warnings"]:
+            impact += " Compatibility warning — " + " ".join(compatibility["warnings"])
+        elif customization and compatibility["checked_constraints"]:
+            impact += " Compatibility check — no deterministic conflict was found for the explicit customization; semantic review still applies."
+        option["operational_impact"] = impact.strip()
     return enriched
