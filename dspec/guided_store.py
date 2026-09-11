@@ -59,6 +59,20 @@ def list_engineering_decisions(session_id: str) -> list[dict[str, Any]]:
         return result
 
 
+def _selected_option(options: dict[str, Any], selected_option_id: str | None) -> dict[str, Any] | None:
+    rows = options.get("options") if isinstance(options, dict) else None
+    if not isinstance(rows, list):
+        return None
+    return next(
+        (
+            item
+            for item in rows
+            if isinstance(item, dict) and item.get("id") == selected_option_id
+        ),
+        None,
+    )
+
+
 def save_engineering_decision(
     session_id: str,
     decision_type: str,
@@ -74,12 +88,17 @@ def save_engineering_decision(
     if not decision_id.strip() or not source_context_sha256.strip():
         raise ValueError("Decision identity and source context are required.")
 
+    chosen = _selected_option(options, selected_option_id)
+    if status == "selected" and chosen is None:
+        raise ValueError("Selected engineering option is missing from the comparison payload.")
+
     ensure_tables()
     now = db.utcnow()
     context_payload = json.dumps(
         {
             "decision_id": decision_id,
             "selected_option_id": selected_option_id,
+            "selected_option": chosen,
             "custom": custom or {},
             "source_context_sha256": source_context_sha256,
         },
@@ -112,7 +131,8 @@ def save_engineering_decision(
             ),
         )
         # Mirror the selected decision into the existing review-context authority
-        # so Solution/Tasks review evidence becomes stale when architecture changes.
+        # so Solution/Tasks review evidence and Solution generation see the same
+        # explicit selected architecture context.
         conn.execute(
             """INSERT INTO interview_answers(
                 session_id,stage,question_id,selected_option_id,free_text_payload,updated_at
@@ -140,12 +160,48 @@ def save_engineering_decision(
     )
 
 
+def stale_architecture_decision(session_id: str, reason: str) -> bool:
+    """Retain the historical decision row but remove it from active spec authority."""
+    ensure_tables()
+    now = db.utcnow()
+    with db.tx() as conn:
+        row = conn.execute(
+            """SELECT 1 FROM engineering_decisions
+               WHERE session_id=? AND decision_type='architecture'
+                 AND decision_id='primary-stack' AND status='selected'""",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute(
+            """UPDATE engineering_decisions
+               SET status='stale', updated_at=?
+               WHERE session_id=? AND decision_type='architecture' AND decision_id='primary-stack'""",
+            (now, session_id),
+        )
+        conn.execute(
+            """DELETE FROM interview_answers
+               WHERE session_id=? AND stage='solution'
+                 AND question_id='engineering-decision:architecture:primary-stack'""",
+            (session_id,),
+        )
+        conn.execute("DELETE FROM execution_plans WHERE session_id=?", (session_id,))
+        conn.execute("UPDATE project_sessions SET updated_at=? WHERE id=?", (now, session_id))
+    return True
+
+
 def clear_session_guidance(session_id: str) -> None:
     """Retire active DS-CHG-002 state after a root product-intent change."""
     ensure_tables()
     with db.tx() as conn:
         conn.execute("DELETE FROM engineering_decisions WHERE session_id=?", (session_id,))
         conn.execute("DELETE FROM execution_plans WHERE session_id=?", (session_id,))
+        conn.execute(
+            """DELETE FROM interview_answers
+               WHERE session_id=? AND stage='solution'
+                 AND question_id LIKE 'engineering-decision:%'""",
+            (session_id,),
+        )
 
 
 def record_concept_exposures(concepts: list[dict[str, str]]) -> None:
@@ -183,6 +239,21 @@ def list_concept_exposures(limit: int = 30) -> list[dict[str, Any]]:
                 (safe_limit,),
             )
         ]
+
+
+def explanation_depth(concept_id: str) -> str:
+    ensure_tables()
+    with db.connect() as conn:
+        row = conn.execute(
+            """SELECT exposure_count,user_marked_understood
+               FROM concept_exposure WHERE concept_id=?""",
+            (concept_id,),
+        ).fetchone()
+        if not row:
+            return "full"
+        if bool(row["user_marked_understood"]) or int(row["exposure_count"]) > 1:
+            return "concise"
+        return "full"
 
 
 def save_execution_plan(
