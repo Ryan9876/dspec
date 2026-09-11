@@ -49,16 +49,20 @@ try:
         advantages: list[str] = Field(max_length=5)
         tradeoffs: list[str] = Field(max_length=5)
         operational_impact: str = Field(max_length=420)
+        cost_level: str = Field(max_length=220, description="Plain-English relative implementation/operating cost, or UNKNOWN when unsupported.")
+        scalability_flexibility: str = Field(max_length=420, description="How the option behaves as scale, portability, or future change needs grow.")
         why_engineers_care: str = Field(max_length=420)
         engineering_concept: EngineeringConcept
         reconsider_when: list[str] = Field(max_length=5)
-        technical_details: list[TechnicalDetail] = Field(max_length=8)
+        technical_details: list[TechnicalDetail] = Field(min_length=1, max_length=8)
 
     class ArchitectureOptionsResult(BaseModel):
         recommended_option_id: str = Field(max_length=64)
+        recommendation_confidence: str = Field(description="high, medium, low, or uncertain")
         alternative_objective: str = Field(max_length=180)
         options: list[ArchitectureOption] = Field(min_length=3, max_length=3)
         decision_summary: str = Field(max_length=420)
+        material_assumptions_unknowns: list[str] = Field(default_factory=list, max_length=6)
 
     class TaskExecutionProfile(BaseModel):
         task_id: str = Field(max_length=64)
@@ -116,7 +120,7 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of task executability and traceability.")
 
     class RequirementsToArchitectureOptions(dspy.Signature):
-        """Compare exactly three coherent implementation approaches derived from current requirements and governing constraints. Return best_fit, simplest, and one meaningful requirement-specific alternative. Explain user and operational consequences first, then the engineering principle and technical details. Do not ask the user to assemble isolated technologies that may be incompatible. Best Fit is the recommendation unless evidence is insufficient; in that case state the uncertainty in why_recommended. Preserve explicit environment, deployment, licensing, security, maintenance, and organizational constraints."""
+        """Compare exactly three coherent implementation approaches derived from current requirements and governing constraints. Return best_fit, simplest, and one meaningful requirement-specific alternative. Explain user and operational consequences first, then the engineering principle and technical details. Use the same comparison dimensions for all three options, including relative cost and scalability/flexibility. Do not ask the user to assemble isolated technologies that may be incompatible. Best Fit is the recommendation unless evidence is insufficient; when evidence is insufficient mark recommendation_confidence uncertain/low and name the missing assumptions instead of inventing confidence. Preserve explicit environment, deployment, licensing, security, maintenance, and organizational constraints."""
         constitution_context: str = dspy.InputField(desc="Governing product, security, runtime, and operational constraints.")
         requirements_spec: str = dspy.InputField(desc="Observable requirements and acceptance criteria that must drive the options.")
         user_preferences: str = dspy.InputField(desc="Saved user preferences and constraints; treat implementation preferences as hypotheses unless explicitly required.")
