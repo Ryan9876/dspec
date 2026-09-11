@@ -13,6 +13,16 @@ try:
         agent_executable: bool = Field(description="True when a downstream coding agent can act without inventing missing implementation decisions.")
         rubric_score: float = Field(ge=0.0, le=1.0, description="Semantic completeness estimate from 0.0 to 1.0.")
 
+    class EngineeringConcept(BaseModel):
+        id: str = Field(max_length=64)
+        label: str = Field(max_length=96)
+        mental_model: str = Field(max_length=220)
+
+    class TechnicalDetail(BaseModel):
+        category: str = Field(max_length=64)
+        choice: str = Field(max_length=140)
+        consequence: str = Field(max_length=220)
+
     class DiscoveryOption(BaseModel):
         id: str = Field(max_length=48)
         label: str = Field(max_length=80)
@@ -29,6 +39,45 @@ try:
     class DiscoveryResult(BaseModel):
         questions: list[DiscoveryQuestion] = Field(max_length=3)
         gaps_found: list[str] = Field(max_length=3)
+
+    class ArchitectureOption(BaseModel):
+        id: str = Field(max_length=64)
+        role: str = Field(description="best_fit, simplest, or alternative")
+        title: str = Field(max_length=100)
+        plain_english_summary: str = Field(max_length=420)
+        why_recommended: str = Field(max_length=420)
+        advantages: list[str] = Field(max_length=5)
+        tradeoffs: list[str] = Field(max_length=5)
+        operational_impact: str = Field(max_length=420)
+        why_engineers_care: str = Field(max_length=420)
+        engineering_concept: EngineeringConcept
+        reconsider_when: list[str] = Field(max_length=5)
+        technical_details: list[TechnicalDetail] = Field(max_length=8)
+
+    class ArchitectureOptionsResult(BaseModel):
+        recommended_option_id: str = Field(max_length=64)
+        alternative_objective: str = Field(max_length=180)
+        options: list[ArchitectureOption] = Field(min_length=3, max_length=3)
+        decision_summary: str = Field(max_length=420)
+
+    class TaskExecutionProfile(BaseModel):
+        task_id: str = Field(max_length=64)
+        title: str = Field(max_length=180)
+        task_text: str
+        requirement_ids: list[str]
+        solution_refs: list[str]
+        reasoning_complexity: str = Field(description="easy, medium, or hard")
+        context_breadth: str = Field(description="isolated, component, subsystem, or cross_system")
+        ambiguity: str = Field(description="low, medium, or high")
+        blast_radius: str
+        risk_flags: list[str]
+        minimum_safe_capability: str = Field(description="local, standard, or advanced")
+        validation: str
+        bounded_context_refs: list[str]
+
+    class TaskExecutionProfilesResult(BaseModel):
+        profiles: list[TaskExecutionProfile]
+        summary: str
 
     class SemanticReviewResult(BaseModel):
         score: float = Field(ge=0.0, le=1.0)
@@ -54,17 +103,32 @@ try:
         """Create a concrete technical solution that satisfies the supplied requirements and constitution. Include components, interfaces, typed data schemas, API request/response/error contracts, state transitions, dependencies, security boundaries, migration/compatibility, failure modes, observability, sequencing, and rollback."""
         constitution_context: str = dspy.InputField(desc="Governing project constraints.")
         requirements_spec: str = dspy.InputField(desc="Requirements and acceptance criteria that the solution must satisfy.")
-        user_architectural_preferences: str = dspy.InputField(desc="User constraints/preferences and current-stage discovery answers; treat preferences as hypotheses unless explicitly required.")
+        user_architectural_preferences: str = dspy.InputField(desc="User constraints/preferences, selected guided architecture decision, and current-stage discovery answers; treat preferences as hypotheses unless explicitly required.")
         solution_spec: str = dspy.OutputField(desc="Complete Markdown technical solution with concrete schemas and contracts.")
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of architectural completeness.")
 
     class SpecToTasks(dspy.Signature):
-        """Create ordered, executable work packages derived from requirements and solution. Each material task must map to requirement IDs, name exact implementation scope, dependencies, preservation constraints, and a concrete terminal verification command or objective assertion. Tasks must not create new product scope."""
+        """Create ordered, executable work packages derived from requirements and solution. Give every material task a stable T-### identifier. Each material task must map to requirement IDs, name exact implementation scope, dependencies, preservation constraints, and a concrete terminal verification command or objective assertion. Tasks must not create new product scope. Keep tasks granular enough that downstream capability/risk classification can route work without rewriting the canonical task."""
         constitution_context: str = dspy.InputField(desc="Governing constraints.")
         requirements_spec: str = dspy.InputField(desc="Required behavior and acceptance criteria.")
         solution_spec: str = dspy.InputField(desc="Approved implementation direction.")
         tasks_spec: str = dspy.OutputField(desc="Complete ordered Markdown task plan with requirement traceability and verification.")
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of task executability and traceability.")
+
+    class RequirementsToArchitectureOptions(dspy.Signature):
+        """Compare exactly three coherent implementation approaches derived from current requirements and governing constraints. Return best_fit, simplest, and one meaningful requirement-specific alternative. Explain user and operational consequences first, then the engineering principle and technical details. Do not ask the user to assemble isolated technologies that may be incompatible. Best Fit is the recommendation unless evidence is insufficient; in that case state the uncertainty in why_recommended. Preserve explicit environment, deployment, licensing, security, maintenance, and organizational constraints."""
+        constitution_context: str = dspy.InputField(desc="Governing product, security, runtime, and operational constraints.")
+        requirements_spec: str = dspy.InputField(desc="Observable requirements and acceptance criteria that must drive the options.")
+        user_preferences: str = dspy.InputField(desc="Saved user preferences and constraints; treat implementation preferences as hypotheses unless explicitly required.")
+        prior_concepts: str = dspy.InputField(desc="Minimal previously encountered engineering concept context used only to tune explanation depth, never the recommendation or risk.")
+        architecture_options: ArchitectureOptionsResult = dspy.OutputField(desc="Exactly three coherent stack/architecture profiles with plain-English consequences first and technical details preserved.")
+
+    class TasksToExecutionProfiles(dspy.Signature):
+        """Classify canonical implementation tasks for safe downstream model routing without changing task scope. Preserve each task ID/text and map requirement and solution references. Assess reasoning complexity, context breadth, ambiguity, blast radius, risk flags, minimum safe capability, validation, and bounded context references. Authentication/authorization, credential handling, destructive data, irreversible migration, irreversible external writes, or material security-boundary work requires advanced capability. When uncertain, choose the safer higher capability instead of under-classifying."""
+        requirements_spec: str = dspy.InputField(desc="Authoritative requirements and acceptance criteria.")
+        solution_spec: str = dspy.InputField(desc="Approved implementation direction.")
+        tasks_spec: str = dspy.InputField(desc="Canonical task plan; do not rewrite or create new product scope.")
+        execution_profiles: TaskExecutionProfilesResult = dspy.OutputField(desc="One routing profile per canonical task, preserving traceability and validation.")
 
     class SemanticSpecReview(dspy.Signature):
         """Review a DSpec tier as a strict independent reviewer. Evaluate completeness, internal consistency, cross-tier alignment, security/failure behavior where applicable, and downstream executability. Do not claim tests or runtime evidence. A score >= 0.90 requires no material must-fix issue."""
@@ -93,7 +157,7 @@ try:
     DSPY_AVAILABLE = True
 except Exception:
     DSPY_AVAILABLE = False
-    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = ReviseSpec = None  # type: ignore
+    IdeaToConstitution = ScopeToRequirements = ArchitectureToSolution = SpecToTasks = DiscoverSpecGaps = SemanticSpecReview = ReviseSpec = RequirementsToArchitectureOptions = TasksToExecutionProfiles = None  # type: ignore
 
 
 def status() -> dict[str, Any]:
