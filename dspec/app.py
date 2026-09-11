@@ -43,8 +43,6 @@ engine = SpecEngine(gateway)
 
 @app.exception_handler(RequestValidationError)
 async def invalid_request(_: Request, exc: RequestValidationError) -> JSONResponse:
-    # Pydantic errors include raw rejected input, which can contain a write-only
-    # credential even before SecretStr validation succeeds.
     return JSONResponse(status_code=422, content={"detail": [
         {"loc": error["loc"], "type": error["type"], "msg": "Invalid value for this field."}
         for error in exc.errors()
@@ -79,6 +77,7 @@ class SpecSave(BaseModel):
     session_id: str
     stage: Literal["constitution", "requirements", "solution", "tasks"]
     content: str = Field(min_length=1)
+    expected_intent_sha256: str | None = None
 
 
 class ReviewRequest(BaseModel):
@@ -187,8 +186,6 @@ async def _events_since(session_id: str, last_seq: int) -> AsyncIterator[str]:
                 return
         task = _ACTIVE_TASKS.get(session_id)
         if task and task.done():
-            # The worker always records complete/error before returning. Give the
-            # ring buffer one scheduling turn to expose that terminal event.
             await asyncio.sleep(0)
             terminal = [i for i in _BUFFERS[session_id] if i["seq"] > current and i["event"] in {"complete", "error"}]
             if not terminal:
@@ -257,14 +254,7 @@ async def assist_questions(req: AssistRequest) -> dict[str, Any]:
     try:
         result = await engine.discover(session, req.stage)
     except ProductIntentRequired as exc:
-        raise HTTPException(
-            422,
-            {
-                "error": "product_intent_required",
-                "message": str(exc),
-                "state_preserved": True,
-            },
-        ) from exc
+        raise HTTPException(422, {"error": "product_intent_required", "message": str(exc), "state_preserved": True}) from exc
     except Exception as exc:
         raise HTTPException(
             503,
@@ -331,10 +321,7 @@ def architecture_select(req: ArchitectureSelectRequest) -> dict[str, Any]:
     rows = req.options.get("options") if isinstance(req.options, dict) else None
     if not isinstance(rows, list) or len(rows) != 3:
         raise HTTPException(422, "Architecture comparison must contain exactly three options.")
-    chosen = next(
-        (item for item in rows if isinstance(item, dict) and item.get("id") == req.selected_option_id),
-        None,
-    )
+    chosen = next((item for item in rows if isinstance(item, dict) and item.get("id") == req.selected_option_id), None)
     if not chosen:
         raise HTTPException(422, "Selected architecture option was not present in the current comparison.")
     roles = sorted(str(item.get("role") or "") for item in rows if isinstance(item, dict))
@@ -475,23 +462,35 @@ def session_get(session_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/answers")
-def answer_save(req: AnswerSave) -> dict[str, bool]:
+def answer_save(req: AnswerSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    db.save_answer(req.session_id, req.stage, req.question_id, req.selected_option_id, req.free_text_payload)
-    return {"saved": True}
+    return db.save_answer(req.session_id, req.stage, req.question_id, req.selected_option_id, req.free_text_payload)
 
 
 @app.post("/api/spec/draft")
 def spec_draft(req: SpecSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    return db.save_draft_buffer(req.session_id, req.stage, req.content)
+    return db.save_draft_buffer(
+        req.session_id,
+        req.stage,
+        req.content,
+        expected_intent_sha256=req.expected_intent_sha256,
+    )
 
 
 @app.post("/api/spec/save")
 def spec_save(req: SpecSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
     review = evaluate(req.stage, req.content)
-    return db.save_spec(req.session_id, req.stage, req.content, review["score"], review, "draft")
+    return db.save_spec(
+        req.session_id,
+        req.stage,
+        req.content,
+        review["score"],
+        review,
+        "draft",
+        expected_intent_sha256=req.expected_intent_sha256,
+    )
 
 
 @app.post("/api/spec/review")
@@ -521,8 +520,6 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
     review["context_sha256"] = context
     with db.tx() as conn:
         db.require_context(conn, req.session_id, req.stage, context)
-        # Every new review requires explicit approval; a failed review must never
-        # leave a previously approved revision exportable.
         db.update_spec_review(spec["id"], review["score"], review, "draft", connection=conn)
     return review
 
@@ -531,12 +528,7 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
 async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     try:
-        content, metrics, review = await engine.revise(
-            session,
-            req.stage,
-            req.content,
-            req.instruction,
-        )
+        content, metrics, review = await engine.revise(session, req.stage, req.content, req.instruction)
     except Exception as exc:
         raise HTTPException(
             503,
@@ -560,7 +552,6 @@ async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
 @app.post("/api/spec/approve")
 def spec_approve(req: ApproveRequest) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    # Review validation and approval must observe the same database snapshot.
     with db.tx() as conn:
         return _approve_current(req, conn)
 
@@ -596,14 +587,7 @@ async def generate(req: GenerateRequest) -> dict[str, Any]:
     try:
         text, metrics, spec = await _generate(req)
     except ProductIntentRequired as exc:
-        raise HTTPException(
-            422,
-            {
-                "error": "product_intent_required",
-                "message": str(exc),
-                "state_preserved": True,
-            },
-        ) from exc
+        raise HTTPException(422, {"error": "product_intent_required", "message": str(exc), "state_preserved": True}) from exc
     except db.StateConflict:
         raise
     except Exception as exc:
@@ -617,14 +601,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     try:
         engine.validate_input(session, req.stage)
     except ProductIntentRequired as exc:
-        raise HTTPException(
-            422,
-            {
-                "error": "product_intent_required",
-                "message": str(exc),
-                "state_preserved": True,
-            },
-        ) from exc
+        raise HTTPException(422, {"error": "product_intent_required", "message": str(exc), "state_preserved": True}) from exc
     existing = _ACTIVE_TASKS.get(req.session_id)
     if existing and not existing.done():
         raise HTTPException(409, {"error": "generation_already_running", "state_preserved": True})
@@ -664,9 +641,6 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
                 expected_context=expected_context,
             )
 
-            # Provisional candidates are never persisted. The selected event is
-            # emitted only after the authoritative Refine result has been saved
-            # against the unchanged project context.
             _record_event(
                 req.session_id,
                 "candidate_selected",
@@ -679,27 +653,16 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
             )
             _record_event(req.session_id, "metrics", metrics)
             for check in review.get("checks", []):
-                _record_event(
-                    req.session_id,
-                    "assertion_check",
-                    {"assertion": check["id"], "passed": check["passed"]},
-                )
+                _record_event(req.session_id, "assertion_check", {"assertion": check["id"], "passed": check["passed"]})
             _record_event(
                 req.session_id,
                 "review_feedback",
-                {
-                    "mustfix": review.get("must_fix", []),
-                    "recommendations": review.get("recommendations", []),
-                },
+                {"mustfix": review.get("must_fix", []), "recommendations": review.get("recommendations", [])},
             )
             _record_event(
                 req.session_id,
                 "complete",
-                {
-                    "specType": req.stage,
-                    "revision": spec["revision_number"],
-                    "version": spec["version_number"],
-                },
+                {"specType": req.stage, "revision": spec["revision_number"], "version": spec["version_number"]},
             )
         except Exception as exc:
             _record_event(
@@ -707,11 +670,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
                 "error",
                 {
                     "error": "generation_failed",
-                    "message": (
-                        str(exc)
-                        if isinstance(exc, db.StateConflict)
-                        else "Generation could not complete. Check the selected provider connection and credentials, then retry."
-                    ),
+                    "message": str(exc) if isinstance(exc, db.StateConflict) else "Generation could not complete. Check the selected provider connection and credentials, then retry.",
                     "state_preserved": True,
                     "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"],
                 },
@@ -721,11 +680,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     return StreamingResponse(
         _events_since(req.session_id, start_seq),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "X-DSpec-Start-Seq": str(start_seq),
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-DSpec-Start-Seq": str(start_seq)},
     )
 
 
@@ -789,8 +744,7 @@ def frontend(full_path: str) -> Response:
         requested = requested / "index.html"
     if requested.exists() and requested.is_file():
         return FileResponse(requested, media_type=mimetypes.guess_type(str(requested))[0])
-    fallback = root / "index.html"
-    return FileResponse(fallback)
+    return FileResponse(root / "index.html")
 
 
 def main() -> None:
