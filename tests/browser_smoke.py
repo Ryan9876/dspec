@@ -188,6 +188,10 @@ The application must preserve saved specification content across browser refresh
             )
             print("BROWSER_REVIEW_FIXTURE_SAVE", json.dumps(save_probe), flush=True)
             assert save_probe["status"] == 200, save_probe
+            # The fixture is written directly through fetch(), so refresh the UI's
+            # session snapshot before testing stage-dependent decision controls.
+            page.reload(wait_until="domcontentloaded")
+            expect(page.get_by_text("browser-e2e", exact=True)).to_be_visible(timeout=10_000)
 
             page.get_by_role("button", name="LLM provider switcher").click()
             expect(page.get_by_text("LLM provider", exact=True)).to_be_visible()
