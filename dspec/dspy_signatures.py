@@ -54,6 +54,8 @@ try:
         advantages: list[str] = Field(max_length=6)
         tradeoffs: list[str] = Field(max_length=6)
         operational_impact: str = Field(max_length=500)
+        cost_level_or_range: str = Field(max_length=320, description="Supportable relative/absolute cost statement or explicit UNKNOWN when evidence is insufficient.")
+        scalability_flexibility: str = Field(max_length=500, description="Practical scalability and future-change implications.")
         why_engineers_care: str = Field(max_length=500)
         engineering_concept: EngineeringConcept
         reconsider_when: list[str] = Field(max_length=6)
@@ -61,9 +63,11 @@ try:
 
     class ArchitectureOptionsResult(BaseModel):
         recommended_option_id: str = Field(max_length=80)
+        recommendation_confidence: str = Field(description="high, medium, low, or unknown", max_length=16)
         alternative_objective: str = Field(max_length=240)
         options: list[ArchitectureOption] = Field(min_length=3, max_length=3)
         decision_summary: str = Field(max_length=700)
+        assumptions_unknowns: list[str] = Field(default_factory=list, max_length=6)
 
     class TaskExecutionProfile(BaseModel):
         task_id: str
@@ -121,12 +125,12 @@ try:
         quality_assessment: SpecQualityRubric = dspy.OutputField(desc="Semantic assessment of task executability and traceability.")
 
     class RequirementsToArchitectureOptions(dspy.Signature):
-        """Compare exactly three coherent implementation approaches derived from the actual requirements and governing constraints. Always return best_fit, simplest, and one meaningful requirement-specific alternative. Explain user/business consequences first, then engineering principle and technical details. Do not ask the user to choose isolated technologies that may be incompatible. Best Fit must be the recommendation unless the supplied constraints make another role definition impossible. Preserve explicit environment, deployment, licensing, security, and organizational constraints."""
+        """Compare exactly three coherent implementation approaches derived from the actual requirements and governing constraints. Always return best_fit, simplest, and one meaningful requirement-specific alternative. Explain user/business consequences first, then recommendation rationale, advantages/tradeoffs, operational impact, supportable cost level/range, scalability/flexibility implications, reconsideration triggers, engineering principle, and technical details. Use UNKNOWN explicitly when cost or recommendation evidence is insufficient rather than inventing precision. Do not ask the user to choose isolated technologies that may be incompatible. Best Fit must be the recommendation unless the supplied constraints make another role definition impossible. Preserve explicit environment, deployment, licensing, security, and organizational constraints."""
         constitution_context: str = dspy.InputField(desc="Governing product, security, runtime, and operational constraints.")
         requirements_spec: str = dspy.InputField(desc="Observable requirements and acceptance criteria that must drive the options.")
         user_preferences: str = dspy.InputField(desc="Saved user preferences and constraints; treat implementation preferences as hypotheses unless explicitly required.")
         prior_concepts: str = dspy.InputField(desc="Previously encountered engineering concept IDs/labels used only to tune explanation depth, never to change the recommendation.")
-        architecture_options: ArchitectureOptionsResult = dspy.OutputField(desc="Exactly three side-by-side coherent stack/architecture options with Best Fit recommended and plain-English consequences before technical details.")
+        architecture_options: ArchitectureOptionsResult = dspy.OutputField(desc="Exactly three side-by-side coherent stack/architecture options with Best Fit recommended, explicit confidence/unknowns, and consistent comparison dimensions.")
 
     class TasksToExecutionProfiles(dspy.Signature):
         """Classify canonical implementation tasks for safe downstream model routing without changing task scope. For every task preserve its ID/text and map requirement/solution references. Assess reasoning complexity, context breadth, ambiguity, blast radius, risk flags, minimum safe capability, validation, and bounded context references. Security-sensitive, authorization, credential, destructive-data, irreversible migration, or irreversible external-write work must require advanced capability. When uncertain, choose the safer higher capability and state the risk rather than under-classifying."""
