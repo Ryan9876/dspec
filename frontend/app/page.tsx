@@ -44,14 +44,19 @@ type DiscoveryQuestion = {
 type DiscoveryResult = { questions:DiscoveryQuestion[]; gaps_found:string[] };
 type EngineeringConcept = { id:string; label:string; mental_model:string };
 type TechnicalDetail = { category:string; choice:string; consequence:string };
+type ArchitectureCompatibility = {
+  status:string; issues:string[]; warnings:string[]; checked_constraints?:string[]; scope?:string;
+};
 type ArchitectureOption = {
   id:string; role:"best_fit"|"simplest"|"alternative"; title:string;
   plain_english_summary:string; why_recommended:string; advantages:string[]; tradeoffs:string[];
-  operational_impact:string; why_engineers_care:string; engineering_concept:EngineeringConcept;
-  reconsider_when:string[]; technical_details:TechnicalDetail[];
+  operational_impact:string; cost_level_or_range?:string; scalability_flexibility?:string;
+  why_engineers_care:string; engineering_concept:EngineeringConcept;
+  reconsider_when:string[]; technical_details:TechnicalDetail[]; compatibility?:ArchitectureCompatibility;
 };
 type ArchitectureOptionsResult = {
   recommended_option_id:string; alternative_objective:string; decision_summary:string;
+  recommendation_confidence?:string; assumptions_unknowns?:string[];
   source_context_sha256:string; customization?:string; options:ArchitectureOption[];
 };
 type EngineeringDecision = {
@@ -561,6 +566,8 @@ function ArchitectureDecisionPanel({session,onChanged}:{session:Session;onChange
     {!comparison?<div className="p-5 text-sm text-slate-500">The recommendation will be based on the saved Constitution, Requirements, operating constraints, and any architecture preferences you have already provided.</div>:<>
       <div className="border-b border-slate-800 px-4 py-3">
         <div className="text-sm text-slate-300">{comparison.decision_summary}</div>
+        {comparison.recommendation_confidence&&<div className="mt-1 text-[11px] text-slate-500">Recommendation confidence: <span className="font-semibold text-slate-300">{comparison.recommendation_confidence}</span></div>}
+        {!!comparison.assumptions_unknowns?.length&&<div className="mt-2 rounded-lg border border-amber-500/15 bg-amber-500/5 px-3 py-2 text-[11px] leading-5 text-amber-100/75"><span className="font-semibold">Assumptions / unknowns:</span> {comparison.assumptions_unknowns.join(" · ")}</div>}
         {!!comparison.customization&&<div className="mt-2 rounded-lg bg-cyan-500/8 px-3 py-2 text-xs text-cyan-200">Re-evaluated with your constraint: {comparison.customization}</div>}
       </div>
       <div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-3">
@@ -595,6 +602,23 @@ function ArchitectureDecisionPanel({session,onChanged}:{session:Session;onChange
               <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Operational impact</div>
               <p className="mt-1 text-xs leading-5 text-slate-400">{option.operational_impact}</p>
             </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Cost / range</div>
+                <p className="mt-1 text-xs leading-5 text-slate-400">{option.cost_level_or_range??"UNKNOWN — this saved comparison did not include a supportable cost range."}</p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/30 p-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Scalability / flexibility</div>
+                <p className="mt-1 text-xs leading-5 text-slate-400">{option.scalability_flexibility??"UNKNOWN — this saved comparison did not include scalability/flexibility evidence."}</p>
+              </div>
+            </div>
+
+            {option.compatibility&&<div className={`mt-3 rounded-lg border p-3 text-[11px] leading-5 ${option.compatibility.status==="FAIL"?"border-rose-500/20 bg-rose-500/5 text-rose-200":"border-emerald-500/15 bg-emerald-500/5 text-emerald-100/75"}`}>
+              <span className="font-semibold">Compatibility check: {option.compatibility.status}</span>
+              {!!option.compatibility.issues.length&&<span className="mt-1 block">{option.compatibility.issues.join(" · ")}</span>}
+              {!!option.compatibility.warnings.length&&<span className="mt-1 block text-amber-200/80">{option.compatibility.warnings.join(" · ")}</span>}
+            </div>}
 
             <div className="mt-3 rounded-lg border border-cyan-500/15 bg-cyan-500/5 p-3">
               <div className="text-[11px] font-semibold text-cyan-300">Why engineers care</div>

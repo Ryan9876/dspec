@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import expect, sync_playwright
 
+from dspec.architecture_compatibility import enrich_architecture_options
+
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "http://127.0.0.1:3210"
 SCREENSHOT = Path(
@@ -288,7 +290,13 @@ def main() -> None:
                 customization = str((payload or {}).get("customization") or "")
                 session_status, current_session = api_json(f"/api/sessions/{sid}")
                 assert session_status == 200, current_session
-                body = architecture_fixture(architecture_source(current_session, customization), customization)
+                raw_body = architecture_fixture(architecture_source(current_session, customization), customization)
+                body = enrich_architecture_options(
+                    raw_body,
+                    constitution=str(current_session.get("specs", {}).get("constitution", {}).get("content") or ""),
+                    requirements=str(current_session.get("specs", {}).get("requirements", {}).get("content") or ""),
+                    customization=customization,
+                )
                 route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
 
             page.route("**/api/decisions/architecture/options", architecture_route)
@@ -310,10 +318,10 @@ def main() -> None:
             page.get_by_role("button", name="Re-evaluate options").click()
             expect(page.get_by_text("Re-evaluated with your constraint:", exact=False)).to_contain_text("SQL Server")
             expect(page.get_by_text("Aligns the data tier with the existing SQL Server", exact=False)).to_be_visible()
-            sql_details = page.get_by_text("Technical details", exact=True).first
-            sql_details.focus()
-            sql_details.press("Enter")
-            expect(page.get_by_text("SQL Server", exact=True)).to_be_visible()
+            custom_best = page.locator("article").filter(has_text="Best Fit — Recommended")
+            custom_details = custom_best.get_by_text("Technical details", exact=True)
+            custom_details.click()
+            expect(custom_best.get_by_text("SQL Server", exact=True)).to_be_visible()
 
             page.set_viewport_size({"width": 700, "height": 900})
             for label in ("Best Fit — Recommended", "Simplest", "Enterprise Alignment"):
@@ -398,8 +406,8 @@ def main() -> None:
 
             for amount in ("$5.50", "$14.00", "$33.00"):
                 expect(page.get_by_text(amount, exact=True)).to_be_visible()
-            expect(page.get_by_text("70.0%", exact=True)).to_be_visible()
-            expect(page.get_by_text("90.0%", exact=True)).to_be_visible()
+            expect(page.get_by_text("70%", exact=True)).to_be_visible()
+            expect(page.get_by_text("90%", exact=True)).to_be_visible()
 
             balanced = page.locator("article").filter(has_text="Balanced")
             balanced.get_by_role("button", name="Use this strategy").click()
