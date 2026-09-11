@@ -14,13 +14,14 @@ type Session = {
   id: string;
   bundle_name: string;
   project_type: string;
-  intent_context_sha256: string;
   specs: Partial<Record<Stage, {
     id: string; content: string; revision_number: number; version_number: number;
     quality_score: number; approval_status: string; review: Review;
   }>>;
   drafts?: Partial<Record<Stage,{content:string;updated_at:string}>>;
   answers: Array<{stage: Stage; question_id: string; selected_option_id?: string; free_text_payload?: string; updated_at?: string}>;
+  engineering_decisions?: EngineeringDecision[];
+  execution_plan?: ExecutionEstimateBundle | null;
 };
 type Review = {
   score?: number; threshold?: number; passed?: boolean;
@@ -30,12 +31,46 @@ type Review = {
   semantic_status?: "PASS"|"FAIL"|"NOT TESTED"|string;
   semantic_error?: string;
 };
-type DiscoveryOption = { id:string; label:string; rationale:string };
+type DiscoveryOption = {
+  id:string; label:string; rationale:string; plain_english_consequence?:string|null;
+  advantages?:string[]; tradeoffs?:string[]; engineering_concept?:EngineeringConcept|null;
+  technical_details?:TechnicalDetail[];
+};
 type DiscoveryQuestion = {
   id:string; question:string; why_it_matters:string; options:DiscoveryOption[];
   recommended_option_id:string; allow_free_text:boolean;
 };
 type DiscoveryResult = { questions:DiscoveryQuestion[]; gaps_found:string[] };
+type EngineeringConcept = { id:string; label:string; mental_model:string };
+type TechnicalDetail = { category:string; choice:string; consequence:string };
+type ArchitectureOption = {
+  id:string; role:"best_fit"|"simplest"|"alternative"; title:string;
+  plain_english_summary:string; why_recommended:string; advantages:string[]; tradeoffs:string[];
+  operational_impact:string; why_engineers_care:string; engineering_concept:EngineeringConcept;
+  reconsider_when:string[]; technical_details:TechnicalDetail[];
+};
+type ArchitectureOptionsResult = {
+  recommended_option_id:string; alternative_objective:string; decision_summary:string;
+  source_context_sha256:string; customization?:string; options:ArchitectureOption[];
+};
+type EngineeringDecision = {
+  decision_type:string; decision_id:string; selected_option_id?:string;
+  options:ArchitectureOptionsResult; custom?:Record<string,unknown>; source_context_sha256:string; updated_at:string;
+};
+type StrategyName = "cost_optimized"|"balanced"|"maximum_capability";
+type StrategyPlan = {
+  strategy:StrategyName; strategy_label:string; budget_status:string; blocked_task_count:number;
+  model_mix:Record<"local"|"standard"|"advanced",{tasks:number;percent:number}>;
+  cloud_api_cost_estimate:{low:number|null;expected:number|null;high:number|null};
+  cost_confidence:string; estimate_assumptions:string[];
+};
+type ExecutionEstimateBundle = {
+  status:"ESTIMATE"|"SELECTED"|string; source_snapshot_sha256:string;
+  recommended_strategy:StrategyName; selected_strategy?:StrategyName|null;
+  selected_plan?:StrategyPlan; budget?:number|null; escalation?:"automatic"|"ask_first";
+  budget_behavior?:"stop_before_exceeding"|"ask_before_overage"|"no_enforcement";
+  plans:Record<StrategyName,StrategyPlan>;
+};
 type Health = {
   status: string; version: string; port: number; active_provider: {provider:string;model:string};
   active_provider_ready?: boolean;
@@ -89,7 +124,6 @@ export default function Home(){
   const [recovery,setRecovery]=useState<RecoveryPrompt|null>(null);
   const [auditOpen,setAuditOpen]=useState(false);
   const [error,setError]=useState<string|null>(null);
-  const [notice,setNotice]=useState<string|null>(null);
   const [draft,setDraft]=useState("");
   const [streamText,setStreamText]=useState("");
   const [streamAttempt,setStreamAttempt]=useState<number|null>(null);
@@ -119,7 +153,7 @@ export default function Home(){
   useEffect(()=>{
     if(!session||!draft.trim())return;
     const persist=()=>{
-      const body=JSON.stringify({session_id:session.id,stage,content:draft,expected_intent_sha256:session.intent_context_sha256});
+      const body=JSON.stringify({session_id:session.id,stage,content:draft});
       const blob=new Blob([body],{type:"application/json"});
       if(!navigator.sendBeacon("/api/spec/draft",blob)){
         void fetch("/api/spec/draft",{method:"POST",headers:{"Content-Type":"application/json"},body,keepalive:true});
@@ -129,7 +163,7 @@ export default function Home(){
     window.addEventListener("pagehide",persist);
     document.addEventListener("visibilitychange",onVisibility);
     return ()=>{window.removeEventListener("pagehide",persist);document.removeEventListener("visibilitychange",onVisibility);};
-  },[session?.id,session?.intent_context_sha256,stage,draft]);
+  },[session?.id,stage,draft]);
 
   const current=session?.specs[stage];
 
@@ -146,7 +180,7 @@ export default function Home(){
   async function saveDraft(content=draft){
     if(!session||!content.trim())return false;
     try{
-      const saved=await api<{content:string;review:Review}>("/api/spec/save",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content,expected_intent_sha256:session.intent_context_sha256})});
+      const saved=await api<{content:string;review:Review}>("/api/spec/save",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content})});
       setReview(saved.review??{}); await loadSession(session.id);
       return true;
     }catch(e){
@@ -157,7 +191,7 @@ export default function Home(){
 
   async function saveDraftBuffer(content:string){
     if(!session)return;
-    await api("/api/spec/draft",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content,expected_intent_sha256:session.intent_context_sha256})});
+    await api("/api/spec/draft",{method:"POST",body:JSON.stringify({session_id:session.id,stage,content})});
   }
 
   function draftChanged(value:string|undefined){
@@ -168,13 +202,7 @@ export default function Home(){
 
   async function saveAssistant(questionId:string, choice:string, text:string){
     if(!session)return;
-    const result=await api<{saved:boolean;intent_invalidated?:boolean;invalidated_stages?:Stage[]}>("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
-    if(result.intent_invalidated){
-      if(saveTimer.current){ clearTimeout(saveTimer.current); saveTimer.current=null; }
-      setDraft("");
-      setReview({});
-      setNotice("Project intent changed. Previous active discovery answers and drafts were retired; prior formal specs remain available as history only.");
-    }
+    await api("/api/answers",{method:"POST",body:JSON.stringify({session_id:session.id,stage,question_id:questionId,selected_option_id:choice,free_text_payload:text})});
     await loadSession(session.id);
   }
 
@@ -384,7 +412,6 @@ export default function Home(){
 
       <section className="min-w-0">
         {error&&<div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-200"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1 break-words">{error}</div><button onClick={()=>setError(null)}>×</button></div>}
-        {notice&&<div className="mb-4 flex items-start gap-2 rounded-xl border border-cyan-500/25 bg-cyan-500/10 p-3 text-sm text-cyan-100"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1">{notice}</div><button onClick={()=>setNotice(null)}>×</button></div>}
         {recovery&&!providerOpen&&<div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100"><CircleAlert className="mt-0.5 h-4 w-4 shrink-0"/><div className="flex-1"><div className="font-semibold">Generation interrupted</div><div className="mt-1 text-xs leading-5 text-amber-100/75">{recovery.statePreserved?"Saved project state is preserved. ":""}Choose a healthy local provider or configure/select a cloud fallback, then generate again.</div></div><button className="btn" onClick={()=>setProviderOpen(true)}>Switch provider</button></div>}
         {auditOpen?<AuditPanel/>:<>
           <div className="panel mb-4 flex items-center gap-1 p-2">
@@ -398,7 +425,9 @@ export default function Home(){
             })}
           </div>
 
-          {!session?<EmptyState onCreate={newProject}/>:<div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4">
+          {!session?<EmptyState onCreate={newProject}/>:<>
+            <StageDecisionPanel stage={stage} session={session} onChanged={()=>loadSession(session.id)}/>
+            <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4">
             <div className="space-y-4">
               <section className="panel overflow-hidden">
                 <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-3">
@@ -436,7 +465,7 @@ export default function Home(){
                 <div className="mt-2 rounded-lg bg-amber-500/8 p-2 text-amber-200/75">MIPROv2 remains BLOCKED until reviewed training data and authorized model execution exist.</div>
               </section>
             </div>
-          </div>}
+          </div></>}
         </>}
       </section>
     </div>
@@ -444,6 +473,311 @@ export default function Home(){
     {providerOpen&&<ProviderModal health={health} recovery={recovery} onClose={()=>setProviderOpen(false)} onChanged={async()=>{await refreshHealth();setRecovery(null);setProviderOpen(false)}}/>}
     {busy&&<div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-sm shadow-2xl"><LoaderCircle className="h-4 w-4 animate-spin text-cyan-300"/>{busy}</div>}
   </main>
+}
+
+function StageDecisionPanel({stage,session,onChanged}:{stage:Stage;session:Session;onChanged:()=>Promise<void>}){
+  if(stage==="solution")return <ArchitectureDecisionPanel session={session} onChanged={onChanged}/>;
+  if(stage==="tasks")return <ExecutionStrategyPanel session={session} onChanged={onChanged}/>;
+  return null;
+}
+
+function ArchitectureDecisionPanel({session,onChanged}:{session:Session;onChanged:()=>Promise<void>}){
+  const saved=session.engineering_decisions?.find(item=>item.decision_type==="architecture"&&item.decision_id==="primary-stack");
+  const [comparison,setComparison]=useState<ArchitectureOptionsResult|null>(saved?.options??null);
+  const [customizing,setCustomizing]=useState(false);
+  const [customization,setCustomization]=useState(String(saved?.custom?.instruction??saved?.options?.customization??""));
+  const [working,setWorking]=useState(false);
+  const [err,setErr]=useState("");
+
+  useEffect(()=>{
+    setComparison(saved?.options??null);
+    setCustomization(String(saved?.custom?.instruction??saved?.options?.customization??""));
+    setCustomizing(false);
+    setErr("");
+  },[session.id,saved?.updated_at]);
+
+  if(!session.specs.requirements){
+    return <section className="panel mb-4 p-4">
+      <div className="font-semibold">Choose the implementation approach</div>
+      <p className="mt-1 text-sm leading-6 text-slate-500">Finish and save the Requirements first. DSpec will use those requirements to compare complete technology approaches instead of asking you to pick languages or databases without context.</p>
+    </section>;
+  }
+
+  async function generateOptions(instruction=""){
+    setWorking(true);setErr("");
+    try{
+      const result=await api<ArchitectureOptionsResult>("/api/decisions/architecture/options",{
+        method:"POST",
+        body:JSON.stringify({session_id:session.id,customization:instruction.trim()||null}),
+      });
+      setComparison(result);
+      setCustomization(result.customization??instruction);
+      setCustomizing(false);
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  async function selectOption(optionId:string){
+    if(!comparison)return;
+    setWorking(true);setErr("");
+    try{
+      await api("/api/decisions/architecture/select",{
+        method:"POST",
+        body:JSON.stringify({
+          session_id:session.id,
+          selected_option_id:optionId,
+          options:comparison,
+          source_context_sha256:comparison.source_context_sha256,
+          custom:{instruction:comparison.customization??customization.trim()},
+        }),
+      });
+      await onChanged();
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  const selectedId=saved?.selected_option_id;
+  return <section className="panel mb-4 overflow-hidden">
+    <div className="flex items-start gap-4 border-b border-slate-800 p-4">
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold">Choose the implementation approach</div>
+        <p className="mt-1 max-w-4xl text-sm leading-6 text-slate-500">DSpec translates the requirements into three coherent engineering options. The consequences come first; exact languages, databases, frameworks, and infrastructure stay available under Technical details.</p>
+      </div>
+      <button className="btn btn-primary shrink-0" disabled={working} onClick={()=>void generateOptions(customization)}>
+        {working?<LoaderCircle className="mr-1 inline h-4 w-4 animate-spin"/>:<Sparkles className="mr-1 inline h-4 w-4"/>}
+        {comparison?"Refresh comparison":"Compare options"}
+      </button>
+    </div>
+    {err&&<div className="mx-4 mt-4 rounded-lg border border-rose-500/25 bg-rose-500/8 p-3 text-xs text-rose-200">{err}</div>}
+    {!comparison?<div className="p-5 text-sm text-slate-500">The recommendation will be based on the saved Constitution, Requirements, operating constraints, and any architecture preferences you have already provided.</div>:<>
+      <div className="border-b border-slate-800 px-4 py-3">
+        <div className="text-sm text-slate-300">{comparison.decision_summary}</div>
+        {!!comparison.customization&&<div className="mt-2 rounded-lg bg-cyan-500/8 px-3 py-2 text-xs text-cyan-200">Re-evaluated with your constraint: {comparison.customization}</div>}
+      </div>
+      <div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-3">
+        {comparison.options.map(option=>{
+          const recommended=option.id===comparison.recommended_option_id;
+          const selected=option.id===selectedId;
+          return <article key={option.id} className={`flex min-w-0 flex-col rounded-xl border p-4 ${recommended?"border-indigo-400/40 bg-indigo-500/7":"border-slate-800 bg-slate-950/25"}`}>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="text-base font-semibold text-slate-100">{option.title}</div>
+                <div className="mt-1 text-[11px] uppercase tracking-wider text-slate-600">{option.role==="best_fit"?"Best overall fit":option.role==="simplest"?"Lowest complexity":comparison.alternative_objective}</div>
+              </div>
+              {recommended&&<span className="rounded-full bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-300">Recommended</span>}
+            </div>
+
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">What this means for you</div>
+              <p className="mt-1 text-sm leading-6 text-slate-300">{option.plain_english_summary}</p>
+            </div>
+
+            <div className="mt-4">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{recommended?"Why DSpec recommends it":"Why you might choose it"}</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{option.why_recommended}</p>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div><div className="text-[11px] font-semibold text-emerald-300/80">Advantages</div><div className="mt-1 space-y-1">{option.advantages.slice(0,4).map(item=><div key={item} className="text-xs leading-5 text-slate-400">• {item}</div>)}</div></div>
+              <div><div className="text-[11px] font-semibold text-amber-300/80">Tradeoffs</div><div className="mt-1 space-y-1">{option.tradeoffs.slice(0,4).map(item=><div key={item} className="text-xs leading-5 text-slate-400">• {item}</div>)}</div></div>
+            </div>
+
+            <div className="mt-4 rounded-lg bg-slate-900/70 p-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Operational impact</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{option.operational_impact}</p>
+            </div>
+
+            <div className="mt-3 rounded-lg border border-cyan-500/15 bg-cyan-500/5 p-3">
+              <div className="text-[11px] font-semibold text-cyan-300">Why engineers care</div>
+              <p className="mt-1 text-xs leading-5 text-slate-400">{option.why_engineers_care}</p>
+              <div className="mt-2 text-[11px] text-slate-500"><span className="font-semibold text-slate-400">{option.engineering_concept.label}:</span> {option.engineering_concept.mental_model}</div>
+            </div>
+
+            {!!option.reconsider_when.length&&<div className="mt-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">What would change this recommendation</div>
+              <div className="mt-1 space-y-1">{option.reconsider_when.slice(0,3).map(item=><div key={item} className="text-[11px] leading-5 text-slate-500">• {item}</div>)}</div>
+            </div>}
+
+            <details className="mt-4 rounded-lg border border-slate-800 bg-slate-950/40">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-300">Technical details</summary>
+              <div className="border-t border-slate-800 p-3">
+                {option.technical_details.map((item,index)=><div key={`${index}-${item.category}`} className="mb-2 last:mb-0">
+                  <div className="flex items-baseline justify-between gap-3 text-xs"><span className="text-slate-500">{item.category}</span><span className="text-right font-medium text-slate-200">{item.choice}</span></div>
+                  <div className="mt-0.5 text-[11px] leading-4 text-slate-600">{item.consequence}</div>
+                </div>)}
+              </div>
+            </details>
+
+            <button className={`btn mt-4 w-full ${recommended?"btn-primary":""}`} disabled={working||selected} onClick={()=>void selectOption(option.id)}>
+              {selected?"Selected":"Choose this approach"}
+            </button>
+          </article>;
+        })}
+      </div>
+      <div className="border-t border-slate-800 p-4">
+        {!customizing?<button className="btn" onClick={()=>setCustomizing(true)}>Customize technology choices</button>:<div className="grid gap-2 md:grid-cols-[1fr_auto]">
+          <textarea className="input min-h-20 resize-y text-xs" value={customization} onChange={e=>setCustomization(e.target.value)} placeholder="Describe the change in plain English, for example: Use SQL Server instead of PostgreSQL because our company already operates SQL Server."/>
+          <div className="flex gap-2 md:flex-col"><button className="btn btn-primary" disabled={working||!customization.trim()} onClick={()=>void generateOptions(customization)}>Re-evaluate options</button><button className="btn" onClick={()=>setCustomizing(false)}>Cancel</button></div>
+        </div>}
+        <p className="mt-2 text-[11px] leading-5 text-slate-600">Customization is treated as an engineering constraint. DSpec regenerates the complete approaches so compatibility and tradeoffs are reconsidered rather than silently swapping one component.</p>
+      </div>
+    </>}
+  </section>;
+}
+
+function ExecutionStrategyPanel({session,onChanged}:{session:Session;onChanged:()=>Promise<void>}){
+  const existing=session.execution_plan??null;
+  const [bundle,setBundle]=useState<ExecutionEstimateBundle|null>(existing?.plans?existing:null);
+  const initialBudget=existing?.budget;
+  const initialChoice=initialBudget===10?"10":initialBudget===25?"25":initialBudget===50?"50":typeof initialBudget==="number"?"custom":"none";
+  const [budgetChoice,setBudgetChoice]=useState(initialChoice);
+  const [customBudget,setCustomBudget]=useState(typeof initialBudget==="number"&&![10,25,50].includes(initialBudget)?String(initialBudget):"");
+  const [escalation,setEscalation]=useState<"automatic"|"ask_first">(existing?.escalation??"automatic");
+  const [budgetBehavior,setBudgetBehavior]=useState<"stop_before_exceeding"|"ask_before_overage"|"no_enforcement">(existing?.budget_behavior??"stop_before_exceeding");
+  const [settingsDirty,setSettingsDirty]=useState(false);
+  const [working,setWorking]=useState(false);
+  const [err,setErr]=useState("");
+
+  useEffect(()=>{
+    const next=session.execution_plan;
+    if(next?.plans)setBundle(next);
+  },[session.id,session.execution_plan?.source_snapshot_sha256,session.execution_plan?.status]);
+
+  if(!session.specs.tasks){
+    return <section className="panel mb-4 p-4">
+      <div className="font-semibold">Plan AI implementation cost</div>
+      <p className="mt-1 text-sm leading-6 text-slate-500">After the Tasks are saved, DSpec can classify the work and compare cost-optimized, balanced, and maximum-capability model strategies at the project level.</p>
+    </section>;
+  }
+
+  const effectiveBudget=budgetChoice==="none"?null:budgetChoice==="custom"?(customBudget.trim()?Number(customBudget):null):Number(budgetChoice);
+  const validBudget=effectiveBudget===null||(Number.isFinite(effectiveBudget)&&effectiveBudget>=0);
+  const strategies:StrategyName[]=["cost_optimized","balanced","maximum_capability"];
+  const descriptions:Record<StrategyName,{summary:string;tradeoff:string}>={
+    cost_optimized:{summary:"Uses local or lower-cost models wherever they meet the task's minimum safe capability, and reserves stronger cloud models for work that actually needs them.",tradeoff:"Lowest expected API spend, with escalation when cheaper models are not sufficient."},
+    balanced:{summary:"Applies stronger models earlier to moderately difficult or ambiguous work while still using local models where the fit is clear.",tradeoff:"Higher API cost in exchange for more reasoning headroom and potentially fewer retries."},
+    maximum_capability:{summary:"Uses the strongest configured eligible model for most substantive work.",tradeoff:"Highest reasoning capability, but expensive models may perform work that cheaper models could safely handle."},
+  };
+
+  function markDirty(){setSettingsDirty(true);}
+
+  async function estimate(){
+    if(!validBudget)return;
+    setWorking(true);setErr("");
+    try{
+      const result=await api<ExecutionEstimateBundle>("/api/execution/estimate",{
+        method:"POST",
+        body:JSON.stringify({
+          session_id:session.id,
+          budget:effectiveBudget,
+          escalation,
+          budget_behavior:budgetBehavior,
+        }),
+      });
+      setBundle(result);setSettingsDirty(false);
+      await onChanged();
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  async function choose(strategy:StrategyName){
+    if(settingsDirty)return;
+    setWorking(true);setErr("");
+    try{
+      const result=await api<ExecutionEstimateBundle>("/api/execution/select",{
+        method:"POST",
+        body:JSON.stringify({session_id:session.id,strategy}),
+      });
+      setBundle(result);
+      await onChanged();
+    }catch(e){setErr(String(e));}
+    finally{setWorking(false);}
+  }
+
+  function money(value:number|null|undefined){return value===null||value===undefined?"UNKNOWN":`${value.toFixed(2)}`;}
+
+  return <section className="panel mb-4 overflow-hidden">
+    <div className="border-b border-slate-800 p-4">
+      <div className="font-semibold">Implementation strategy & cloud budget</div>
+      <p className="mt-1 max-w-5xl text-sm leading-6 text-slate-500">DSpec estimates the project-level model mix and cloud API cost before you choose how implementation work should be routed. Cost Optimized is the default recommendation.</p>
+    </div>
+
+    <div className="grid gap-4 border-b border-slate-800 p-4 lg:grid-cols-3">
+      <div>
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Cloud budget</div>
+        <select className="input" value={budgetChoice} onChange={e=>{setBudgetChoice(e.target.value);markDirty();}}>
+          <option value="none">No limit</option><option value="10">$10</option><option value="25">$25</option><option value="50">$50</option><option value="custom">Custom</option>
+        </select>
+        {budgetChoice==="custom"&&<input className="input mt-2" type="number" min="0" step="1" value={customBudget} onChange={e=>{setCustomBudget(e.target.value);markDirty();}} placeholder="Maximum cloud API spend"/>}
+        {!validBudget&&<div className="mt-1 text-[11px] text-rose-300">Enter a valid non-negative budget.</div>}
+      </div>
+      <div>
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">If a cheaper model is not sufficient</div>
+        <label className="mb-1.5 flex cursor-pointer gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400"><input type="radio" checked={escalation==="automatic"} onChange={()=>{setEscalation("automatic");markDirty();}}/><span><span className="text-slate-200">Automatically escalate — Recommended</span><span className="mt-0.5 block text-[11px] text-slate-600">Move the task to the next safe capability tier.</span></span></label>
+        <label className="flex cursor-pointer gap-2 rounded-lg border border-slate-800 p-2 text-xs text-slate-400"><input type="radio" checked={escalation==="ask_first"} onChange={()=>{setEscalation("ask_first");markDirty();}}/><span><span className="text-slate-200">Ask me first</span><span className="mt-0.5 block text-[11px] text-slate-600">Stop before switching to a more expensive model.</span></span></label>
+      </div>
+      <div>
+        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Budget behavior</div>
+        <select className="input" value={budgetBehavior} onChange={e=>{setBudgetBehavior(e.target.value as typeof budgetBehavior);markDirty();}}>
+          <option value="stop_before_exceeding">Stop before exceeding — Recommended</option>
+          <option value="ask_before_overage">Ask before any overage</option>
+          <option value="no_enforcement">No budget enforcement</option>
+        </select>
+        <div className="mt-2 rounded-lg border border-amber-500/15 bg-amber-500/5 p-2 text-[11px] leading-5 text-amber-100/75">Budget controls may pause paid work, but they never route a task below its minimum safe model capability.</div>
+      </div>
+    </div>
+
+    <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+      <div className="text-xs text-slate-500">{bundle&&!settingsDirty?"Estimate reflects the controls above.":bundle?"Controls changed — recalculate before choosing a strategy.":"Generate one project-level estimate for all three strategies."}</div>
+      <button className="btn btn-primary shrink-0" disabled={working||!validBudget} onClick={()=>void estimate()}>{working?<LoaderCircle className="mr-1 inline h-4 w-4 animate-spin"/>:<Sparkles className="mr-1 inline h-4 w-4"/>}{bundle?"Recalculate":"Estimate implementation"}</button>
+    </div>
+
+    {err&&<div className="mx-4 mt-4 rounded-lg border border-rose-500/25 bg-rose-500/8 p-3 text-xs text-rose-200">{err}</div>}
+    {bundle&&<div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-3">
+      {strategies.map(strategy=>{
+        const plan=bundle.plans[strategy];
+        if(!plan)return null;
+        const recommended=strategy===bundle.recommended_strategy;
+        const selected=strategy===bundle.selected_strategy;
+        const cost=plan.cloud_api_cost_estimate;
+        return <article key={strategy} className={`flex flex-col rounded-xl border p-4 ${recommended?"border-indigo-400/40 bg-indigo-500/7":"border-slate-800 bg-slate-950/25"}`}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="text-base font-semibold text-slate-100">{plan.strategy_label}</div>
+            {recommended&&<span className="rounded-full bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold text-cyan-300">Recommended</span>}
+          </div>
+          <div className="mt-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">What this means for you</div>
+            <p className="mt-1 text-sm leading-6 text-slate-300">{descriptions[strategy].summary}</p>
+          </div>
+          <div className="mt-3 text-xs leading-5 text-slate-500">{descriptions[strategy].tradeoff}</div>
+
+          <div className="mt-4 rounded-lg bg-slate-900/70 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Estimated model mix</div>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+              <div><div className="text-lg font-semibold text-slate-200">{plan.model_mix.local.percent}%</div><div className="text-[10px] text-slate-600">Local</div></div>
+              <div><div className="text-lg font-semibold text-slate-200">{plan.model_mix.standard.percent}%</div><div className="text-[10px] text-slate-600">Standard</div></div>
+              <div><div className="text-lg font-semibold text-slate-200">{plan.model_mix.advanced.percent}%</div><div className="text-[10px] text-slate-600">Advanced</div></div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-slate-800 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Estimated cloud API cost</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-100">{money(cost.expected)}</div>
+            <div className="mt-1 text-[11px] text-slate-600">Range {money(cost.low)} – {money(cost.high)}</div>
+            {plan.budget_status!=="NO_LIMIT"&&plan.budget_status!=="WITHIN_EXPECTED"&&<div className="mt-2 text-[11px] leading-4 text-amber-300">Budget status: {plan.budget_status.replaceAll("_"," ").toLowerCase()}</div>}
+            {!!plan.blocked_task_count&&<div className="mt-2 text-[11px] leading-4 text-rose-300">{plan.blocked_task_count} task(s) have no configured model meeting the minimum safe capability.</div>}
+          </div>
+
+          <details className="mt-3 rounded-lg border border-slate-800">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-300">How this estimate works</summary>
+            <div className="border-t border-slate-800 p-3">{plan.estimate_assumptions.map(item=><div key={item} className="mb-1 text-[11px] leading-5 text-slate-500">• {item}</div>)}</div>
+          </details>
+
+          <button className={`btn mt-4 w-full ${recommended?"btn-primary":""}`} disabled={working||settingsDirty||selected} onClick={()=>void choose(strategy)}>{selected?"Selected":"Use this strategy"}</button>
+        </article>;
+      })}
+    </div>}
+  </section>;
 }
 
 function EmptyState({onCreate}:{onCreate:()=>void}){
@@ -510,7 +844,7 @@ function DynamicQuestion({question,saved,onSave}:{question:DiscoveryQuestion;sav
   return <div className="rounded-xl border border-indigo-400/15 bg-indigo-500/5 p-3">
     <div className="text-sm font-semibold text-slate-200">{question.question}</div>
     <div className="mt-1 text-[11px] leading-4 text-slate-500">{question.why_it_matters}</div>
-    <div className="mt-2 space-y-1.5">{question.options.map(o=><label key={o.id} className="block cursor-pointer rounded-lg border border-slate-800 p-2 text-xs hover:border-slate-700"><span className="flex items-start gap-2"><input className="mt-0.5" type="radio" checked={choice===o.id} onChange={()=>{setChoice(o.id);setSavedState(false)}}/><span><span className="text-slate-300">{o.label}{o.id===question.recommended_option_id&&<span className="ml-1 text-cyan-300">Recommended</span>}</span><span className="mt-0.5 block text-[11px] leading-4 text-slate-600">{o.rationale}</span></span></span></label>)}</div>
+    <div className="mt-2 space-y-1.5">{question.options.map(o=><label key={o.id} className="block cursor-pointer rounded-lg border border-slate-800 p-2 text-xs hover:border-slate-700"><span className="flex items-start gap-2"><input className="mt-0.5" type="radio" checked={choice===o.id} onChange={()=>{setChoice(o.id);setSavedState(false)}}/><span><span className="text-slate-300">{o.label}{o.id===question.recommended_option_id&&<span className="ml-1 text-cyan-300">Recommended</span>}</span><span className="mt-0.5 block text-[11px] leading-4 text-slate-600">{o.plain_english_consequence??o.rationale}</span>{o.plain_english_consequence&&<span className="mt-1 block text-[11px] leading-4 text-slate-500">{o.rationale}</span>}{(o.engineering_concept||o.technical_details?.length)?<details className="mt-2 rounded border border-slate-800 bg-slate-950/40 p-2"><summary className="cursor-pointer text-[11px] font-medium text-slate-400">Engineering principle & technical details</summary>{o.engineering_concept&&<span className="mt-2 block text-[11px] leading-4 text-cyan-200/80"><b>{o.engineering_concept.label}:</b> {o.engineering_concept.mental_model}</span>}{o.technical_details?.map((detail,index)=><span key={`${index}-${detail.category}`} className="mt-2 block text-[11px] leading-4 text-slate-500"><b className="text-slate-400">{detail.category} — {detail.choice}:</b> {detail.consequence}</span>)}</details>:null}</span></span></label>)}</div>
     {question.allow_free_text&&<textarea className="input mt-2 min-h-16 text-xs" value={text} onChange={e=>{setText(e.target.value);setSavedState(false)}} placeholder="Optional context or alternative…"/>}
     <button className="btn mt-2 w-full" onClick={async()=>{await onSave(question.id,choice??"",text);setSavedState(true)}}>{savedState?"Saved":"Save answer"}</button>
   </div>
