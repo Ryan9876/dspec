@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any, AsyncIterator
@@ -10,12 +11,15 @@ from .dspy_signatures import (
     DiscoverSpecGaps,
     DSPY_AVAILABLE,
     IdeaToConstitution,
+    RequirementsToArchitectureOptions,
     ReviseSpec,
     ScopeToRequirements,
     SemanticSpecReview,
     SpecToTasks,
+    TasksToExecutionProfiles,
 )
 from .dspy_runtime import make_lm
+from .execution_planning import normalize_profile
 from .optimization_store import load_promoted_state
 from .provider import ProviderGateway
 from .provider_selection import selected_for_inference
@@ -40,6 +44,7 @@ DISCOVERY_MAX_INTENT_CHARS = 2000
 DISCOVERY_MAX_PRIOR_CHARS = 6000
 DISCOVERY_MAX_ANSWERS_CHARS = 2500
 DISCOVERY_MAX_DRAFT_CHARS = 4000
+DISCOVERY_MAX_CONCEPT_CHARS = 1200
 
 
 class ProductIntentRequired(ValueError):
@@ -114,10 +119,50 @@ class SpecEngine:
                     line += f"; user_context={user_text}"
                 lines.append(line)
             else:
-                lines.append(
-                    f"- {question_id}: selected={selected_id}; free_text={user_text}"
-                )
+                lines.append(f"- {question_id}: selected={selected_id}; free_text={user_text}")
         return "\n".join(lines) if lines else "No saved discovery answers for this stage."
+
+    @staticmethod
+    def _selected_architecture(session: dict[str, Any]) -> str:
+        for item in session.get("engineering_decisions", []):
+            if item.get("decision_type") != "architecture":
+                continue
+            options = item.get("options") or {}
+            selected_id = item.get("selected_option_id")
+            selected = next(
+                (
+                    option for option in options.get("options", [])
+                    if isinstance(option, dict) and option.get("id") == selected_id
+                ),
+                None,
+            )
+            if selected:
+                return json.dumps(
+                    {
+                        "selected_option": selected,
+                        "customization": item.get("custom") or {},
+                        "source_context_sha256": item.get("source_context_sha256"),
+                    },
+                    sort_keys=True,
+                )
+        return "No architecture option has been selected yet."
+
+    @staticmethod
+    def architecture_source_sha256(session: dict[str, Any], customization: str | None = None) -> str:
+        payload = {
+            "constitution": session.get("specs", {}).get("constitution", {}).get("content"),
+            "requirements": session.get("specs", {}).get("requirements", {}).get("content"),
+            "customization": (customization or "").strip(),
+            "solution_answers": [
+                {
+                    key: answer.get(key)
+                    for key in ("question_id", "selected_option_id", "free_text_payload")
+                }
+                for answer in session.get("answers", [])
+                if answer.get("stage") == "solution"
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     @staticmethod
     def _prior(session: dict[str, Any], stage: str) -> str:
@@ -137,6 +182,14 @@ class SpecEngine:
             return text
         omitted = len(text) - max_chars
         return text[:max_chars].rstrip() + f"\n\n[DSpec context truncated: {omitted} characters omitted]"
+
+    @staticmethod
+    def _concept_context(limit: int = 30) -> str:
+        concepts = db.list_concept_exposures()
+        return "\n".join(
+            f"- {item['concept_id']}: {item['label']} (encountered {item['exposure_count']} times)"
+            for item in concepts[:limit]
+        ) or "No previously encountered engineering concepts."
 
     def _discovery_inputs(self, session: dict[str, Any], stage: str) -> dict[str, str]:
         self.validate_input(session, stage)
@@ -163,10 +216,7 @@ class SpecEngine:
             parts.extend(
                 [
                     "Project intent:\n"
-                    + self._clip_context(
-                        self._project_intent(session),
-                        DISCOVERY_MAX_INTENT_CHARS,
-                    ),
+                    + self._clip_context(self._project_intent(session), DISCOVERY_MAX_INTENT_CHARS),
                     "Operating boundary:\n"
                     + str(root.get("selected_option_id") or "Recommend a safe default")
                     if root
@@ -188,13 +238,15 @@ class SpecEngine:
                 else "No active draft."
             )
         )
+        concept_context = self._clip_context(self._concept_context(), DISCOVERY_MAX_CONCEPT_CHARS)
+        parts.append(
+            "Previously encountered engineering concepts (explanation depth only; never change recommendation or risk):\n"
+            + concept_context
+        )
 
         return {
             "stage": stage,
-            "prior_tiers": self._clip_context(
-                self._prior(session, stage),
-                DISCOVERY_MAX_PRIOR_CHARS,
-            ),
+            "prior_tiers": self._clip_context(self._prior(session, stage), DISCOVERY_MAX_PRIOR_CHARS),
             "current_answers": "\n\n".join(parts),
         }
 
@@ -230,7 +282,10 @@ class SpecEngine:
             return {
                 "constitution_context": specs.get("constitution", {}).get("content", "Constitution not yet drafted."),
                 "requirements_spec": specs.get("requirements", {}).get("content", "Requirements not yet drafted."),
-                "user_architectural_preferences": f"{answers}\n\nAdditional user direction:\n{extra}",
+                "user_architectural_preferences": (
+                    f"{answers}\n\nSelected architecture decision:\n{self._selected_architecture(session)}"
+                    f"\n\nAdditional user direction:\n{extra}"
+                ),
             }
         return {
             "constitution_context": specs.get("constitution", {}).get("content", "Constitution not yet drafted."),
@@ -251,14 +306,8 @@ class SpecEngine:
         lm = self._lm(selected)
         signature = _SIGNATURES[stage]
         output_field = _OUTPUT_FIELDS[stage]
-
-        # Stage signatures already define the structured outputs DSpec needs.
-        # Adding ChainOfThought inserts a separate reasoning field before the
-        # user-visible spec and materially delays useful streamed content.
         base = dspy.Predict(signature)
         promoted = load_promoted_state(base, stage)
-        # Saved DSPy state can include the LM used during compilation. Runtime
-        # provider selection remains authoritative.
         base.set_lm(lm)
 
         def reward(_args: dict[str, Any], pred: dspy.Prediction) -> float:
@@ -371,14 +420,6 @@ class SpecEngine:
         stage: str,
         instructions: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream provisional stage content while preserving Refine authority.
-
-        Raw DSPy/provider chunks may contain reasoning, quality assessment, and
-        Refine feedback. Only the active stage specification field is emitted.
-        The final event contains the authoritative Refine-selected prediction;
-        callers must persist only that final result.
-        """
-
         import dspy
 
         selected = await selected_for_inference(self.gateway)
@@ -409,11 +450,7 @@ class SpecEngine:
                     final_prediction = value
 
         for item in parser.finalize():
-            payload = {
-                "event": item.event,
-                "attempt": item.attempt,
-                "provisional": True,
-            }
+            payload = {"event": item.event, "attempt": item.attempt, "provisional": True}
             if item.text is not None:
                 payload["text"] = item.text
                 if first_chunk_ms is None and item.text:
@@ -433,13 +470,7 @@ class SpecEngine:
             latency_ms=latency_ms,
             first_provisional_chunk_ms=first_chunk_ms,
         )
-        yield {
-            "event": "final",
-            "content": content,
-            "metrics": metrics,
-            "review": review,
-        }
-
+        yield {"event": "final", "content": content, "metrics": metrics, "review": review}
 
     async def revise(
         self,
@@ -508,7 +539,6 @@ class SpecEngine:
             "measurement_scope": "request latency measured locally; provider token accounting not asserted",
         }
         return revised, metrics, review
-
 
     async def semantic_review(self, session: dict[str, Any], stage: str, content: str) -> dict[str, Any]:
         structural = evaluate(stage, content)
@@ -586,6 +616,93 @@ class SpecEngine:
             "provider": {"provider": selected["provider"], "model": selected["model"]},
         }
 
+    async def architecture_options(self, session: dict[str, Any], customization: str | None = None) -> dict[str, Any]:
+        if RequirementsToArchitectureOptions is None:
+            raise RuntimeError("DSPy architecture-option signature is unavailable.")
+        requirements = session.get("specs", {}).get("requirements", {}).get("content", "").strip()
+        if not requirements:
+            raise ValueError("A Requirements draft is required before comparing implementation approaches.")
+        import dspy
+
+        selected = await selected_for_inference(self.gateway)
+        lm = self._lm(selected)
+        program = dspy.Predict(RequirementsToArchitectureOptions)
+        prior_concepts = self._clip_context(self._concept_context(), 3000)
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(
+                constitution_context=session.get("specs", {}).get("constitution", {}).get("content", "No Constitution draft."),
+                requirements_spec=requirements,
+                user_preferences=(
+                    self._answers(session, "solution")
+                    + ("\n\nUser-requested stack customization to re-evaluate:\n" + customization.strip() if customization and customization.strip() else "")
+                ),
+                prior_concepts=prior_concepts,
+            )
+        options = getattr(result, "architecture_options", None)
+        if hasattr(options, "model_dump"):
+            data = options.model_dump()
+        elif isinstance(options, dict):
+            data = options
+        else:
+            raise RuntimeError("DSPy returned invalid architecture options.")
+
+        rows = data.get("options") or []
+        roles = [str(item.get("role") or "") for item in rows if isinstance(item, dict)]
+        if len(rows) != 3 or sorted(roles) != ["alternative", "best_fit", "simplest"]:
+            raise RuntimeError("Architecture comparison must contain exactly Best Fit, Simplest, and one meaningful alternative.")
+        best_fit = next(item for item in rows if item.get("role") == "best_fit")
+        if data.get("recommended_option_id") != best_fit.get("id"):
+            data["recommended_option_id"] = best_fit.get("id")
+        source_sha = self.architecture_source_sha256(session, customization)
+        data["source_context_sha256"] = source_sha
+        data["customization"] = (customization or "").strip()
+        db.record_concept_exposures(
+            [
+                {
+                    "id": str((item.get("engineering_concept") or {}).get("id") or ""),
+                    "label": str((item.get("engineering_concept") or {}).get("label") or ""),
+                }
+                for item in rows
+            ]
+        )
+        return data
+
+    async def task_execution_profiles(self, session: dict[str, Any]) -> dict[str, Any]:
+        if TasksToExecutionProfiles is None:
+            raise RuntimeError("DSPy task-routing signature is unavailable.")
+        specs = session.get("specs", {})
+        requirements = specs.get("requirements", {}).get("content", "").strip()
+        solution = specs.get("solution", {}).get("content", "").strip()
+        tasks = specs.get("tasks", {}).get("content", "").strip()
+        if not requirements or not solution or not tasks:
+            raise ValueError("Requirements, Solution, and Tasks drafts are required before estimating implementation routing.")
+        import dspy
+
+        selected = await selected_for_inference(self.gateway)
+        lm = self._lm(selected)
+        program = dspy.Predict(TasksToExecutionProfiles)
+        with dspy.context(lm=lm):
+            result = await dspy.asyncify(program)(
+                requirements_spec=requirements,
+                solution_spec=solution,
+                tasks_spec=tasks,
+            )
+        profiles = getattr(result, "execution_profiles", None)
+        if hasattr(profiles, "model_dump"):
+            data = profiles.model_dump()
+        elif isinstance(profiles, dict):
+            data = profiles
+        else:
+            raise RuntimeError("DSPy returned invalid task execution profiles.")
+        rows = data.get("profiles") or []
+        if not rows:
+            raise RuntimeError("Task routing produced no task profiles.")
+        data["profiles"] = [
+            normalize_profile(item, str(item.get("task_text") or ""))
+            for item in rows if isinstance(item, dict)
+        ]
+        return data
+
     async def discover(self, session: dict[str, Any], stage: str) -> dict[str, Any]:
         if DiscoverSpecGaps is None:
             raise RuntimeError("DSPy discovery signature is unavailable.")
@@ -617,6 +734,21 @@ class SpecEngine:
             payload = discovery
         else:
             raise RuntimeError("DSPy returned an invalid discovery result.")
+
+        exposed: list[dict[str, str]] = []
+        for question in payload.get("questions", []):
+            if not isinstance(question, dict):
+                continue
+            for option in question.get("options", []):
+                if not isinstance(option, dict):
+                    continue
+                concept = option.get("engineering_concept")
+                if isinstance(concept, dict) and concept.get("id"):
+                    exposed.append({
+                        "id": str(concept.get("id")),
+                        "label": str(concept.get("label") or concept.get("id")),
+                    })
+        db.record_concept_exposures(exposed)
 
         payload["diagnostics"] = {
             "provider": selected["provider"],
