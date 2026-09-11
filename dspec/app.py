@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
 from . import db
+from .architecture_compatibility import enrich_architecture_options, validate_architecture_option
 from .audit import scan_repository
 from .config import APP_VERSION, BUILD_HASH, HOST, PORT
 from .dspy_signatures import status as dspy_status
@@ -288,7 +289,13 @@ async def architecture_options(req: ArchitectureOptionsRequest) -> dict[str, Any
             },
         )
     try:
-        return await engine.architecture_options(session, req.customization)
+        result = await engine.architecture_options(session, req.customization)
+        return enrich_architecture_options(
+            result,
+            constitution=str(session.get("specs", {}).get("constitution", {}).get("content") or ""),
+            requirements=str(session.get("specs", {}).get("requirements", {}).get("content") or ""),
+            customization=req.customization or "",
+        )
     except ValueError as exc:
         raise HTTPException(409, {"error": "requirements_required", "message": str(exc), "state_preserved": True}) from exc
     except Exception as exc:
@@ -305,10 +312,8 @@ async def architecture_options(req: ArchitectureOptionsRequest) -> dict[str, Any
 @app.post("/api/decisions/architecture/select")
 def architecture_select(req: ArchitectureSelectRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
-    current_source = engine.architecture_source_sha256(
-        session,
-        str(req.custom.get("instruction") or "") if isinstance(req.custom, dict) else None,
-    )
+    customization = str(req.custom.get("instruction") or "") if isinstance(req.custom, dict) else ""
+    current_source = engine.architecture_source_sha256(session, customization)
     if current_source != req.source_context_sha256:
         raise HTTPException(
             409,
@@ -327,6 +332,23 @@ def architecture_select(req: ArchitectureSelectRequest) -> dict[str, Any]:
     roles = sorted(str(item.get("role") or "") for item in rows if isinstance(item, dict))
     if roles != ["alternative", "best_fit", "simplest"]:
         raise HTTPException(422, "Architecture comparison roles are invalid.")
+    compatibility = validate_architecture_option(
+        chosen,
+        constitution=str(session.get("specs", {}).get("constitution", {}).get("content") or ""),
+        requirements=str(session.get("specs", {}).get("requirements", {}).get("content") or ""),
+        customization=customization,
+    )
+    chosen["compatibility"] = compatibility
+    if compatibility["status"] == "FAIL":
+        raise HTTPException(
+            409,
+            {
+                "error": "architecture_compatibility_failed",
+                "message": "The selected architecture conflicts with explicit project constraints. Re-evaluate the comparison before continuing.",
+                "issues": compatibility["issues"],
+                "state_preserved": True,
+            },
+        )
     decision = db.save_engineering_decision(
         req.session_id,
         "architecture",
