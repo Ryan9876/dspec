@@ -1,38 +1,47 @@
 {
   "schema_version": 1,
-  "as_of": "2026-09-09",
+  "as_of": "2026-09-11",
   "units": "USD per 1M tokens",
+  "scope": "Standard non-batch API token pricing only. Cache, batch, regional, priority, tool, and other provider-specific pricing are not estimated unless explicitly represented.",
   "models": {
     "openai:gpt-5.6-sol": {
       "input_per_million": 4,
-      "cached_input_per_million": 0.4,
       "output_per_million": 20,
-      "as_of": "2026-09-09",
-      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+      "as_of": "2026-09-11",
+      "source": "https://platform.openai.com/docs/models/gpt-5.6-sol",
+      "pricing_scope": "standard input/output"
     },
     "openai:gpt-5.6-terra": {
       "input_per_million": 2,
-      "cached_input_per_million": 0.2,
       "output_per_million": 12,
-      "as_of": "2026-09-09",
-      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+      "as_of": "2026-09-11",
+      "source": "https://platform.openai.com/docs/models/gpt-5.6-terra",
+      "pricing_scope": "standard input/output"
     },
     "openai:gpt-5.6-luna": {
       "input_per_million": 0.2,
-      "cached_input_per_million": 0.02,
       "output_per_million": 1.2,
-      "as_of": "2026-09-09",
-      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+      "as_of": "2026-09-11",
+      "source": "https://platform.openai.com/docs/models/gpt-5.6-luna",
+      "pricing_scope": "standard input/output"
+    },
+    "anthropic:claude-sonnet-5": {
+      "input_per_million": 2,
+      "output_per_million": 10,
+      "as_of": "2026-09-11",
+      "source": "https://www.anthropic.com/claude/sonnet",
+      "pricing_scope": "standard global input/output"
     },
     "anthropic:claude-sonnet-4-6": {
       "input_per_million": 3,
       "output_per_million": 15,
-      "as_of": "2026-09-09",
-      "source": "https://www.anthropic.com/news/claude-sonnet-4-6"
+      "as_of": "2026-09-11",
+      "source": "https://www.anthropic.com/news/claude-sonnet-4-6",
+      "pricing_scope": "standard global input/output"
     }
   },
   "aliases": {
     "openai:gpt-5.6": "openai:gpt-5.6-sol"
   },
-  "unknown_policy": "If a cloud model has no verified catalog entry, DSpec reports pricing as UNKNOWN rather than fabricating a price."
+  "unknown_policy": "If a cloud model has no verified catalog entry, or its pricing semantics are not represented by this registry, DSpec reports pricing as UNKNOWN/PARTIAL rather than fabricating a price."
 }
