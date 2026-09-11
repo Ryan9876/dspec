@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -135,6 +138,7 @@ def test_execution_estimate_defaults_cost_optimized_and_forces_security_advanced
     monkeypatch: pytest.MonkeyPatch,
 ):
     sid = create_session(client, "routing-estimate")
+    save_tier(client, sid, "constitution", "# Constitution\n\nCON-001 preserve governed implementation boundaries.")
     save_tier(client, sid, "requirements", "# Requirements\n\nREQ-001 configure UI. REQ-002 protect authorization.")
     save_tier(client, sid, "solution", "# Solution\n\nSOL-001 config path. SOL-002 authorization boundary.")
     save_tier(client, sid, "tasks", "# Tasks\n\nT-001 config update.\nT-002 authorization update.")
