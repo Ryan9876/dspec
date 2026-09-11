@@ -31,3 +31,6 @@ addopts = "-q"
 
 [tool.setuptools]
 packages = ["dspec"]
+
+[tool.setuptools.package-data]
+dspec = ["data/*.json"]

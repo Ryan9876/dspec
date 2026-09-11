@@ -16,10 +16,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, SecretStr
 
 from . import db
+from .architecture_compatibility import enrich_architecture_options, validate_architecture_option
 from .audit import scan_repository
 from .config import APP_VERSION, BUILD_HASH, HOST, PORT
 from .dspy_signatures import status as dspy_status
 from .exporter import build_bundle
+from .execution_planning import build_model_candidates, plan_execution, source_snapshot_sha256
 from .provider import ProviderGateway, public_discovery
 from .provider_selection import reconcile_selected
 from .quality import evaluate
@@ -42,8 +44,6 @@ engine = SpecEngine(gateway)
 
 @app.exception_handler(RequestValidationError)
 async def invalid_request(_: Request, exc: RequestValidationError) -> JSONResponse:
-    # Pydantic errors include raw rejected input, which can contain a write-only
-    # credential even before SecretStr validation succeeds.
     return JSONResponse(status_code=422, content={"detail": [
         {"loc": error["loc"], "type": error["type"], "msg": "Invalid value for this field."}
         for error in exc.errors()
@@ -115,6 +115,31 @@ class AssistRequest(BaseModel):
     stage: Literal["constitution", "requirements", "solution", "tasks"]
 
 
+class ArchitectureOptionsRequest(BaseModel):
+    session_id: str
+    customization: str | None = Field(default=None, max_length=4000)
+
+
+class ArchitectureSelectRequest(BaseModel):
+    session_id: str
+    selected_option_id: str = Field(min_length=1, max_length=160)
+    options: dict[str, Any]
+    source_context_sha256: str = Field(min_length=64, max_length=64)
+    custom: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionEstimateRequest(BaseModel):
+    session_id: str
+    budget: float | None = Field(default=None, ge=0)
+    escalation: Literal["automatic", "ask_first"] = "automatic"
+    budget_behavior: Literal["stop_before_exceeding", "ask_before_overage", "no_enforcement"] = "stop_before_exceeding"
+
+
+class ExecutionSelectRequest(BaseModel):
+    session_id: str
+    strategy: Literal["cost_optimized", "balanced", "maximum_capability"]
+
+
 class AuditRequest(BaseModel):
     repo_path: str
     ignore_patterns: list[str] = []
@@ -162,8 +187,6 @@ async def _events_since(session_id: str, last_seq: int) -> AsyncIterator[str]:
                 return
         task = _ACTIVE_TASKS.get(session_id)
         if task and task.done():
-            # The worker always records complete/error before returning. Give the
-            # ring buffer one scheduling turn to expose that terminal event.
             await asyncio.sleep(0)
             terminal = [i for i in _BUFFERS[session_id] if i["seq"] > current and i["event"] in {"complete", "error"}]
             if not terminal:
@@ -232,14 +255,7 @@ async def assist_questions(req: AssistRequest) -> dict[str, Any]:
     try:
         result = await engine.discover(session, req.stage)
     except ProductIntentRequired as exc:
-        raise HTTPException(
-            422,
-            {
-                "error": "product_intent_required",
-                "message": str(exc),
-                "state_preserved": True,
-            },
-        ) from exc
+        raise HTTPException(422, {"error": "product_intent_required", "message": str(exc), "state_preserved": True}) from exc
     except Exception as exc:
         raise HTTPException(
             503,
@@ -257,6 +273,194 @@ async def assist_questions(req: AssistRequest) -> dict[str, Any]:
         json.dumps(result, sort_keys=True, separators=(",", ":")),
     )
     return result
+
+
+@app.post("/api/decisions/architecture/options")
+async def architecture_options(req: ArchitectureOptionsRequest) -> dict[str, Any]:
+    session = _session_or_404(req.session_id)
+    pending = db.pending_drafts(session, "requirements")
+    if pending:
+        raise HTTPException(
+            409,
+            {
+                "error": "unsaved_requirements_context",
+                "message": "Save changed Constitution/Requirements drafts before comparing implementation approaches.",
+                "state_preserved": True,
+            },
+        )
+    try:
+        result = await engine.architecture_options(session, req.customization)
+        return enrich_architecture_options(
+            result,
+            constitution=str(session.get("specs", {}).get("constitution", {}).get("content") or ""),
+            requirements=str(session.get("specs", {}).get("requirements", {}).get("content") or ""),
+            customization=req.customization or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(409, {"error": "requirements_required", "message": str(exc), "state_preserved": True}) from exc
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            {
+                "error": "architecture_options_unavailable",
+                "message": "Implementation approaches could not be generated. Your specification state was preserved.",
+                "state_preserved": True,
+            },
+        ) from exc
+
+
+@app.post("/api/decisions/architecture/select")
+def architecture_select(req: ArchitectureSelectRequest) -> dict[str, Any]:
+    session = _session_or_404(req.session_id)
+    customization = str(req.custom.get("instruction") or "") if isinstance(req.custom, dict) else ""
+    current_source = engine.architecture_source_sha256(session, customization)
+    if current_source != req.source_context_sha256:
+        raise HTTPException(
+            409,
+            {
+                "error": "architecture_options_stale",
+                "message": "Requirements or architecture inputs changed. Refresh the comparison before selecting an option.",
+                "state_preserved": True,
+            },
+        )
+    rows = req.options.get("options") if isinstance(req.options, dict) else None
+    if not isinstance(rows, list) or len(rows) != 3:
+        raise HTTPException(422, "Architecture comparison must contain exactly three options.")
+    chosen = next((item for item in rows if isinstance(item, dict) and item.get("id") == req.selected_option_id), None)
+    if not chosen:
+        raise HTTPException(422, "Selected architecture option was not present in the current comparison.")
+    roles = sorted(str(item.get("role") or "") for item in rows if isinstance(item, dict))
+    if roles != ["alternative", "best_fit", "simplest"]:
+        raise HTTPException(422, "Architecture comparison roles are invalid.")
+    compatibility = validate_architecture_option(
+        chosen,
+        constitution=str(session.get("specs", {}).get("constitution", {}).get("content") or ""),
+        requirements=str(session.get("specs", {}).get("requirements", {}).get("content") or ""),
+        customization=customization,
+    )
+    chosen["compatibility"] = compatibility
+    if compatibility["status"] == "FAIL":
+        raise HTTPException(
+            409,
+            {
+                "error": "architecture_compatibility_failed",
+                "message": "The selected architecture conflicts with explicit project constraints. Re-evaluate the comparison before continuing.",
+                "issues": compatibility["issues"],
+                "state_preserved": True,
+            },
+        )
+    decision = db.save_engineering_decision(
+        req.session_id,
+        "architecture",
+        "primary-stack",
+        req.selected_option_id,
+        req.options,
+        req.custom,
+        req.source_context_sha256,
+    )
+    return {"saved": True, "decision": decision, "session": db.get_session(req.session_id)}
+
+
+@app.post("/api/execution/estimate")
+async def execution_estimate(req: ExecutionEstimateRequest) -> dict[str, Any]:
+    session = _session_or_404(req.session_id)
+    pending = db.pending_drafts(session, "tasks")
+    if pending:
+        raise HTTPException(
+            409,
+            {
+                "error": "unsaved_execution_context",
+                "message": "Save changed Requirements, Solution, or Tasks drafts before estimating implementation routing.",
+                "state_preserved": True,
+            },
+        )
+    try:
+        profile_result = await engine.task_execution_profiles(session)
+        discovered = await gateway.discover()
+        candidates = build_model_candidates(discovered, gateway.selected())
+        source_sha = source_snapshot_sha256(session)
+        plans = {
+            strategy: plan_execution(
+                profile_result["profiles"],
+                candidates,
+                strategy=strategy,
+                budget=req.budget,
+                escalation=req.escalation,
+                budget_behavior=req.budget_behavior,
+                source_sha256=source_sha,
+            )
+            for strategy in ("cost_optimized", "balanced", "maximum_capability")
+        }
+        bundle = {
+            "status": "ESTIMATE",
+            "source_snapshot_sha256": source_sha,
+            "recommended_strategy": "cost_optimized",
+            "selected_strategy": None,
+            "budget": req.budget,
+            "escalation": req.escalation,
+            "budget_behavior": req.budget_behavior,
+            "profile_summary": profile_result.get("summary"),
+            "plans": plans,
+        }
+        db.save_execution_plan(req.session_id, source_sha, bundle)
+        return bundle
+    except ValueError as exc:
+        raise HTTPException(409, {"error": "execution_context_incomplete", "message": str(exc), "state_preserved": True}) from exc
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            {
+                "error": "execution_estimate_unavailable",
+                "message": "Implementation cost/routing could not be estimated. Your specification state was preserved.",
+                "state_preserved": True,
+            },
+        ) from exc
+
+
+@app.post("/api/execution/select")
+def execution_select(req: ExecutionSelectRequest) -> dict[str, Any]:
+    session = _session_or_404(req.session_id)
+    bundle = db.get_execution_plan(req.session_id)
+    if not bundle:
+        raise HTTPException(409, "Generate an implementation estimate before selecting a strategy.")
+    current_source = source_snapshot_sha256(session)
+    if bundle.get("source_snapshot_sha256") != current_source:
+        raise HTTPException(
+            409,
+            {
+                "error": "execution_plan_stale",
+                "message": "Requirements, Solution, Tasks, or the architecture decision changed. Recalculate the implementation estimate.",
+                "state_preserved": True,
+            },
+        )
+    plans = bundle.get("plans") or {}
+    if req.strategy not in plans:
+        raise HTTPException(422, "Selected implementation strategy is unavailable.")
+    updated = {
+        **bundle,
+        "status": "SELECTED",
+        "selected_strategy": req.strategy,
+        "selected_plan": plans[req.strategy],
+    }
+    return db.save_execution_plan(req.session_id, current_source, updated)
+
+
+@app.get("/api/execution/plan/{session_id}")
+def execution_plan(session_id: str) -> dict[str, Any]:
+    session = _session_or_404(session_id)
+    bundle = db.get_execution_plan(session_id)
+    if not bundle:
+        raise HTTPException(404, "No implementation execution plan exists.")
+    if bundle.get("source_snapshot_sha256") != source_snapshot_sha256(session):
+        raise HTTPException(
+            409,
+            {
+                "error": "execution_plan_stale",
+                "message": "The implementation plan no longer matches the current specification.",
+                "state_preserved": True,
+            },
+        )
+    return bundle
 
 
 @app.get("/api/sessions")
@@ -338,8 +542,6 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
     review["context_sha256"] = context
     with db.tx() as conn:
         db.require_context(conn, req.session_id, req.stage, context)
-        # Every new review requires explicit approval; a failed review must never
-        # leave a previously approved revision exportable.
         db.update_spec_review(spec["id"], review["score"], review, "draft", connection=conn)
     return review
 
@@ -348,12 +550,7 @@ async def spec_review(req: ReviewRequest) -> dict[str, Any]:
 async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
     session = _session_or_404(req.session_id)
     try:
-        content, metrics, review = await engine.revise(
-            session,
-            req.stage,
-            req.content,
-            req.instruction,
-        )
+        content, metrics, review = await engine.revise(session, req.stage, req.content, req.instruction)
     except Exception as exc:
         raise HTTPException(
             503,
@@ -377,7 +574,6 @@ async def spec_revise(req: RevisionApplyRequest) -> dict[str, Any]:
 @app.post("/api/spec/approve")
 def spec_approve(req: ApproveRequest) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    # Review validation and approval must observe the same database snapshot.
     with db.tx() as conn:
         return _approve_current(req, conn)
 
@@ -413,14 +609,7 @@ async def generate(req: GenerateRequest) -> dict[str, Any]:
     try:
         text, metrics, spec = await _generate(req)
     except ProductIntentRequired as exc:
-        raise HTTPException(
-            422,
-            {
-                "error": "product_intent_required",
-                "message": str(exc),
-                "state_preserved": True,
-            },
-        ) from exc
+        raise HTTPException(422, {"error": "product_intent_required", "message": str(exc), "state_preserved": True}) from exc
     except db.StateConflict:
         raise
     except Exception as exc:
@@ -434,14 +623,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     try:
         engine.validate_input(session, req.stage)
     except ProductIntentRequired as exc:
-        raise HTTPException(
-            422,
-            {
-                "error": "product_intent_required",
-                "message": str(exc),
-                "state_preserved": True,
-            },
-        ) from exc
+        raise HTTPException(422, {"error": "product_intent_required", "message": str(exc), "state_preserved": True}) from exc
     existing = _ACTIVE_TASKS.get(req.session_id)
     if existing and not existing.done():
         raise HTTPException(409, {"error": "generation_already_running", "state_preserved": True})
@@ -481,9 +663,6 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
                 expected_context=expected_context,
             )
 
-            # Provisional candidates are never persisted. The selected event is
-            # emitted only after the authoritative Refine result has been saved
-            # against the unchanged project context.
             _record_event(
                 req.session_id,
                 "candidate_selected",
@@ -496,27 +675,16 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
             )
             _record_event(req.session_id, "metrics", metrics)
             for check in review.get("checks", []):
-                _record_event(
-                    req.session_id,
-                    "assertion_check",
-                    {"assertion": check["id"], "passed": check["passed"]},
-                )
+                _record_event(req.session_id, "assertion_check", {"assertion": check["id"], "passed": check["passed"]})
             _record_event(
                 req.session_id,
                 "review_feedback",
-                {
-                    "mustfix": review.get("must_fix", []),
-                    "recommendations": review.get("recommendations", []),
-                },
+                {"mustfix": review.get("must_fix", []), "recommendations": review.get("recommendations", [])},
             )
             _record_event(
                 req.session_id,
                 "complete",
-                {
-                    "specType": req.stage,
-                    "revision": spec["revision_number"],
-                    "version": spec["version_number"],
-                },
+                {"specType": req.stage, "revision": spec["revision_number"], "version": spec["version_number"]},
             )
         except Exception as exc:
             _record_event(
@@ -524,11 +692,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
                 "error",
                 {
                     "error": "generation_failed",
-                    "message": (
-                        str(exc)
-                        if isinstance(exc, db.StateConflict)
-                        else "Generation could not complete. Check the selected provider connection and credentials, then retry."
-                    ),
+                    "message": str(exc) if isinstance(exc, db.StateConflict) else "Generation could not complete. Check the selected provider connection and credentials, then retry.",
                     "state_preserved": True,
                     "fallback_options": ["lm_studio", "ollama", "openai", "anthropic"],
                 },
@@ -538,11 +702,7 @@ async def stream(req: GenerateRequest) -> StreamingResponse:
     return StreamingResponse(
         _events_since(req.session_id, start_seq),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "X-DSpec-Start-Seq": str(start_seq),
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-DSpec-Start-Seq": str(start_seq)},
     )
 
 
@@ -606,8 +766,7 @@ def frontend(full_path: str) -> Response:
         requested = requested / "index.html"
     if requested.exists() and requested.is_file():
         return FileResponse(requested, media_type=mimetypes.guess_type(str(requested))[0])
-    fallback = root / "index.html"
-    return FileResponse(fallback)
+    return FileResponse(root / "index.html")
 
 
 def main() -> None:

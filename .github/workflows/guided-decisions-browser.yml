@@ -1,0 +1,60 @@
+name: DSpec Guided Decisions Browser
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  guided-decisions-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Python runtime
+        run: python -m pip install -e ".[dev]"
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm install
+          npm run build
+      - name: Install Chromium
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if python -m playwright install chromium; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+      - name: Validate guided engineering decisions and routing UI
+        env:
+          DSPEC_GUIDED_BROWSER_SCREENSHOT: evidence/guided-decisions.png
+        run: python tests/browser_guided_decisions.py
+      - name: Validate complete guided-decision acceptance workflow
+        env:
+          DSPEC_GUIDED_ACCEPTANCE_SCREENSHOT: evidence/guided-acceptance.png
+        run: python tests/browser_guided_acceptance.py
+      - name: Upload guided-decision evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dspec-guided-decisions-evidence
+          path: |
+            evidence/guided-decisions.png
+            evidence/guided-acceptance.png
+          if-no-files-found: ignore
+          retention-days: 14
