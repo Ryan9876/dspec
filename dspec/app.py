@@ -20,6 +20,8 @@ from .audit import scan_repository
 from .config import APP_VERSION, BUILD_HASH, HOST, PORT
 from .dspy_signatures import status as dspy_status
 from .exporter import build_bundle
+from .guided_api import build_guided_router
+from .guided_store import clear_session_guidance, ensure_tables as ensure_guided_tables
 from .provider import ProviderGateway, public_discovery
 from .provider_selection import reconcile_selected
 from .quality import evaluate
@@ -31,6 +33,7 @@ from .spec_engine import ProductIntentRequired, SpecEngine
 async def lifespan(_: FastAPI):
     configure_logging()
     db.init_db()
+    ensure_guided_tables()
     yield
 
 
@@ -38,6 +41,7 @@ app = FastAPI(title="DSpec AI", version=APP_VERSION, docs_url="/api/docs", redoc
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"])
 gateway = ProviderGateway()
 engine = SpecEngine(gateway)
+app.include_router(build_guided_router(gateway))
 
 
 @app.exception_handler(RequestValidationError)
@@ -55,6 +59,7 @@ async def state_conflict(_: Request, exc: db.StateConflict) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": {
         "error": "project_state_changed", "message": str(exc), "state_preserved": True,
     }})
+
 
 _BUFFERS: dict[str, deque[dict[str, Any]]] = defaultdict(lambda: deque(maxlen=2000))
 _SEQ: dict[str, int] = defaultdict(int)
@@ -186,6 +191,7 @@ async def _generate(req: GenerateRequest) -> tuple[str, dict[str, Any], dict[str
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     db.init_db()
+    ensure_guided_tables()
     discovery = await gateway.discover(max_age_seconds=15.0)
     selected, selected_ready = reconcile_selected(gateway, discovery)
     return {
@@ -282,7 +288,10 @@ def session_get(session_id: str) -> dict[str, Any]:
 @app.post("/api/answers")
 def answer_save(req: AnswerSave) -> dict[str, Any]:
     _session_or_404(req.session_id)
-    return db.save_answer(req.session_id, req.stage, req.question_id, req.selected_option_id, req.free_text_payload)
+    result = db.save_answer(req.session_id, req.stage, req.question_id, req.selected_option_id, req.free_text_payload)
+    if result.get("intent_invalidated"):
+        clear_session_guidance(req.session_id)
+    return result
 
 
 @app.post("/api/spec/draft")
