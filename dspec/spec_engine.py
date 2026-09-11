@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from typing import Any, AsyncIterator
 
@@ -20,6 +21,7 @@ from .dspy_signatures import (
 )
 from .dspy_runtime import make_lm
 from .execution_planning import normalize_profile
+from .explanation_policy import adapt_concept_explanations
 from .optimization_store import load_promoted_state
 from .provider import ProviderGateway
 from .provider_selection import selected_for_inference
@@ -44,7 +46,6 @@ DISCOVERY_MAX_INTENT_CHARS = 2000
 DISCOVERY_MAX_PRIOR_CHARS = 6000
 DISCOVERY_MAX_ANSWERS_CHARS = 2500
 DISCOVERY_MAX_DRAFT_CHARS = 4000
-DISCOVERY_MAX_CONCEPT_CHARS = 1200
 
 
 class ProductIntentRequired(ValueError):
@@ -237,11 +238,6 @@ class SpecEngine:
                 if current
                 else "No active draft."
             )
-        )
-        concept_context = self._clip_context(self._concept_context(), DISCOVERY_MAX_CONCEPT_CHARS)
-        parts.append(
-            "Previously encountered engineering concepts (explanation depth only; never change recommendation or risk):\n"
-            + concept_context
         )
 
         return {
@@ -627,7 +623,7 @@ class SpecEngine:
         selected = await selected_for_inference(self.gateway)
         lm = self._lm(selected)
         program = dspy.Predict(RequirementsToArchitectureOptions)
-        prior_concepts = self._clip_context(self._concept_context(), 3000)
+        prior_exposures = db.list_concept_exposures()
         with dspy.context(lm=lm):
             result = await dspy.asyncify(program)(
                 constitution_context=session.get("specs", {}).get("constitution", {}).get("content", "No Constitution draft."),
@@ -636,7 +632,10 @@ class SpecEngine:
                     self._answers(session, "solution")
                     + ("\n\nUser-requested stack customization to re-evaluate:\n" + customization.strip() if customization and customization.strip() else "")
                 ),
-                prior_concepts=prior_concepts,
+                prior_concepts=(
+                    "Concept memory is intentionally withheld from recommendation generation. "
+                    "DSpec adapts explanation depth locally after the recommendation is produced."
+                ),
             )
         options = getattr(result, "architecture_options", None)
         if hasattr(options, "model_dump"):
@@ -646,6 +645,7 @@ class SpecEngine:
         else:
             raise RuntimeError("DSPy returned invalid architecture options.")
 
+        data = adapt_concept_explanations(data, prior_exposures)
         rows = data.get("options") or []
         roles = [str(item.get("role") or "") for item in rows if isinstance(item, dict)]
         if len(rows) != 3 or sorted(roles) != ["alternative", "best_fit", "simplest"]:
@@ -697,10 +697,26 @@ class SpecEngine:
         rows = data.get("profiles") or []
         if not rows:
             raise RuntimeError("Task routing produced no task profiles.")
-        data["profiles"] = [
+        normalized = [
             normalize_profile(item, str(item.get("task_text") or ""))
             for item in rows if isinstance(item, dict)
         ]
+        canonical_ids = list(dict.fromkeys(re.findall(r"(?im)^\s*(?:[-*]\s*)?(?:#{1,6}\s*)?(T-\d{3})\b", tasks)))
+        if not canonical_ids:
+            canonical_ids = list(dict.fromkeys(re.findall(r"\bT-\d{3}\b", tasks)))
+        profile_ids = [str(item.get("task_id") or "") for item in normalized]
+        if not canonical_ids:
+            raise RuntimeError("Canonical Tasks do not contain stable T-### identifiers required for safe routing.")
+        if len(profile_ids) != len(set(profile_ids)):
+            raise RuntimeError("Task routing returned duplicate task profiles; routing is blocked until every canonical task is unique.")
+        missing = sorted(set(canonical_ids) - set(profile_ids))
+        extra = sorted(set(profile_ids) - set(canonical_ids))
+        if missing or extra:
+            raise RuntimeError(
+                "Task routing metadata is incomplete or does not match canonical Tasks. "
+                f"Missing={missing or 'none'}; extra={extra or 'none'}."
+            )
+        data["profiles"] = normalized
         return data
 
     async def discover(self, session: dict[str, Any], stage: str) -> dict[str, Any]:
@@ -711,6 +727,7 @@ class SpecEngine:
 
         selected = await selected_for_inference(self.gateway)
         inputs = self._discovery_inputs(session, stage)
+        prior_exposures = db.list_concept_exposures()
         lm = make_lm(
             selected["provider"],
             selected["model"],
@@ -735,6 +752,7 @@ class SpecEngine:
         else:
             raise RuntimeError("DSPy returned an invalid discovery result.")
 
+        payload = adapt_concept_explanations(payload, prior_exposures)
         exposed: list[dict[str, str]] = []
         for question in payload.get("questions", []):
             if not isinstance(question, dict):
