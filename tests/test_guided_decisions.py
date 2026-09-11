@@ -138,9 +138,6 @@ def test_execution_estimate_defaults_cost_optimized_and_forces_security_advanced
     monkeypatch: pytest.MonkeyPatch,
 ):
     sid = create_session(client, "routing-estimate")
-    # Canonical DSpec export always requires all four tiers, even when testing
-    # execution planning. Keep the fixture complete rather than weakening the
-    # existing export gate.
     save_tier(client, sid, "constitution", "# Constitution\n\nPreserve user intent and explicit security boundaries.")
     save_tier(client, sid, "requirements", "# Requirements\n\nREQ-001 configure UI. REQ-002 protect authorization.")
     save_tier(client, sid, "solution", "# Solution\n\nSOL-001 config path. SOL-002 authorization boundary.")
@@ -252,3 +249,67 @@ def test_concept_exposure_is_local_metadata_not_expertise(client: TestClient):
     assert rows[0]["concept_id"] == "relational-data"
     assert rows[0]["exposure_count"] == 2
     assert rows[0]["user_marked_understood"] == 0
+
+
+def test_root_intent_change_retires_architecture_and_execution_plan(client: TestClient):
+    sid = create_session(client, "intent-retires-planning")
+    first = client.post(
+        "/api/answers",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "question_id": "assistant-constitution",
+            "selected_option_id": "Recommend a safe default",
+            "free_text_payload": "Build a local number generator.",
+        },
+    )
+    assert first.status_code == 200
+    save_tier(client, sid, "requirements", "# Requirements\n\nREQ-001 generate a number.")
+
+    session = client.get(f"/api/sessions/{sid}").json()
+    options = architecture_fixture(engine.architecture_source_sha256(session))
+    selected = client.post(
+        "/api/decisions/architecture/select",
+        json={
+            "session_id": sid,
+            "selected_option_id": "best",
+            "options": options,
+            "source_context_sha256": options["source_context_sha256"],
+            "custom": {},
+        },
+    )
+    assert selected.status_code == 200
+
+    db.save_execution_plan(
+        sid,
+        "fixture-source",
+        {
+            "status": "SELECTED",
+            "source_snapshot_sha256": "fixture-source",
+            "selected_strategy": "cost_optimized",
+            "plans": {},
+        },
+    )
+    before = client.get(f"/api/sessions/{sid}").json()
+    assert before["engineering_decisions"]
+    assert before["execution_plan"] is not None
+
+    changed = client.post(
+        "/api/answers",
+        json={
+            "session_id": sid,
+            "stage": "constitution",
+            "question_id": "assistant-constitution",
+            "selected_option_id": "Cloud-capable with explicit consent",
+            "free_text_payload": "Build a hosted random-number service for teams.",
+        },
+    )
+    assert changed.status_code == 200
+    assert changed.json()["intent_invalidated"] is True
+
+    after = client.get(f"/api/sessions/{sid}").json()
+    assert after["engineering_decisions"] == []
+    assert after["execution_plan"] is None
+    assert after["specs"] == {}
+    root = next(item for item in after["answers"] if item["question_id"] == "assistant-constitution")
+    assert root["free_text_payload"] == "Build a hosted random-number service for teams."
