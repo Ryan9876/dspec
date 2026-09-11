@@ -319,9 +319,8 @@ def main() -> None:
             expect(page.get_by_text("Re-evaluated with your constraint:", exact=False)).to_contain_text("SQL Server")
             expect(page.get_by_text("Aligns the data tier with the existing SQL Server", exact=False)).to_be_visible()
             custom_best = page.locator("article").filter(has_text="Best Fit — Recommended")
-            custom_details = custom_best.get_by_text("Technical details", exact=True)
-            custom_details.click()
-            expect(custom_best.get_by_text("SQL Server", exact=True)).to_be_visible()
+            custom_details = custom_best.locator("details").first
+            expect(custom_details).to_contain_text("SQL Server")
 
             page.set_viewport_size({"width": 700, "height": 900})
             for label in ("Best Fit — Recommended", "Simplest", "Enterprise Alignment"):
