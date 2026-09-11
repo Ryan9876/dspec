@@ -44,11 +44,17 @@ jobs:
         env:
           DSPEC_GUIDED_BROWSER_SCREENSHOT: evidence/guided-decisions.png
         run: python tests/browser_guided_decisions.py
+      - name: Validate complete guided-decision acceptance workflow
+        env:
+          DSPEC_GUIDED_ACCEPTANCE_SCREENSHOT: evidence/guided-acceptance.png
+        run: python tests/browser_guided_acceptance.py
       - name: Upload guided-decision evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dspec-guided-decisions-evidence
-          path: evidence/guided-decisions.png
+          path: |
+            evidence/guided-decisions.png
+            evidence/guided-acceptance.png
           if-no-files-found: ignore
           retention-days: 14
