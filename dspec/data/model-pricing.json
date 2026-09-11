@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-09-09",
+  "units": "USD per 1M tokens",
+  "models": {
+    "openai:gpt-5.6-sol": {
+      "input_per_million": 4,
+      "cached_input_per_million": 0.4,
+      "output_per_million": 20,
+      "as_of": "2026-09-09",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
+    },
+    "openai:gpt-5.6-terra": {
+      "input_per_million": 2,
+      "cached_input_per_million": 0.2,
+      "output_per_million": 12,
+      "as_of": "2026-09-09",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-terra"
+    },
+    "openai:gpt-5.6-luna": {
+      "input_per_million": 0.2,
+      "cached_input_per_million": 0.02,
+      "output_per_million": 1.2,
+      "as_of": "2026-09-09",
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.6-luna"
+    },
+    "anthropic:claude-sonnet-4-6": {
+      "input_per_million": 3,
+      "output_per_million": 15,
+      "as_of": "2026-09-09",
+      "source": "https://www.anthropic.com/news/claude-sonnet-4-6"
+    }
+  },
+  "aliases": {
+    "openai:gpt-5.6": "openai:gpt-5.6-sol"
+  },
+  "unknown_policy": "If a cloud model has no verified catalog entry, DSpec reports pricing as UNKNOWN rather than fabricating a price."
+}
