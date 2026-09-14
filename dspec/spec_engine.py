@@ -41,7 +41,7 @@ _SIGNATURES = {
     "tasks": SpecToTasks,
 }
 
-DISCOVERY_MAX_OUTPUT_TOKENS = 900
+DISCOVERY_MAX_OUTPUT_TOKENS = 3072
 DISCOVERY_MAX_INTENT_CHARS = 2000
 DISCOVERY_MAX_PRIOR_CHARS = 6000
 DISCOVERY_MAX_ANSWERS_CHARS = 2500
@@ -723,7 +723,7 @@ class SpecEngine:
         if DiscoverSpecGaps is None:
             raise RuntimeError("DSPy discovery signature is unavailable.")
         import dspy
-        from dspy.adapters.chat_adapter import ChatAdapter
+        from dspy.adapters.json_adapter import JSONAdapter
 
         selected = await selected_for_inference(self.gateway)
         inputs = self._discovery_inputs(session, stage)
@@ -739,7 +739,7 @@ class SpecEngine:
         started = time.perf_counter()
         with dspy.context(
             lm=lm,
-            adapter=ChatAdapter(use_json_adapter_fallback=False),
+            adapter=JSONAdapter(),
         ):
             result = await dspy.asyncify(program)(**inputs)
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -774,6 +774,9 @@ class SpecEngine:
             "request_latency_ms": latency_ms,
             "input_chars": sum(len(value) for value in inputs.values()),
             "max_output_tokens": DISCOVERY_MAX_OUTPUT_TOKENS,
-            "measurement_scope": "local DSpec request timing; provider token accounting not asserted",
+            "measurement_scope": (
+                "local DSpec request timing; configured completion ceiling may include hidden reasoning tokens; "
+                "provider token accounting and reasoning/visible split are not asserted"
+            ),
         }
         return payload

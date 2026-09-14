@@ -83,6 +83,46 @@ def test_dspy_runtime_rejects_remote_local_override(monkeypatch: pytest.MonkeyPa
         make_lm("lm_studio", "fixture-model")
 
 
+def test_lm_studio_advertises_structured_output_capability(monkeypatch: pytest.MonkeyPatch):
+    import dspy
+
+    class FakeLM:
+        def __init__(self, model: str, **kwargs):
+            self.model = model
+            self.kwargs = kwargs
+
+        @property
+        def supports_response_schema(self) -> bool:
+            return False
+
+        @property
+        def supported_params(self) -> set[str]:
+            return {"temperature", "max_tokens"}
+
+    monkeypatch.setattr(dspy, "LM", FakeLM)
+
+    lm = make_lm(
+        "lm_studio",
+        "meta/muse-glimmer",
+        max_tokens=3072,
+        temperature=0.0,
+        num_retries=1,
+    )
+
+    assert isinstance(lm, FakeLM)
+    assert lm.model == "openai/meta/muse-glimmer"
+    assert lm.kwargs == {
+        "api_base": "http://127.0.0.1:1234/v1",
+        "api_key": "lm-studio",
+        "model_type": "chat",
+        "max_tokens": 3072,
+        "num_retries": 1,
+        "temperature": 0.0,
+    }
+    assert lm.supports_response_schema is True
+    assert "response_format" in lm.supported_params
+    assert "temperature" in lm.supported_params
+
 
 def test_openai_reasoning_model_uses_bounded_native_completion_parameter(
     monkeypatch: pytest.MonkeyPatch,
